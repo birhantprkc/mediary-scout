@@ -406,6 +406,19 @@ class PansouTransferBindingTests(unittest.TestCase):
         with self.assertRaises(IndexError):
             snapshot.bind_indices([3])
 
+    def test_snapshot_id_is_order_sensitive(self):
+        """LinkSnapshot.snapshot_id must differ when the same items are reordered."""
+        pansou_client = load_pansou_module(self)
+
+        items = [
+            {"type": "115", "title": "A", "url": "https://a", "password": ""},
+            {"type": "115", "title": "B", "url": "https://b", "password": ""},
+        ]
+        first = pansou_client.LinkSnapshot(items)
+        second = pansou_client.LinkSnapshot(list(reversed(items)))
+
+        self.assertNotEqual(first.snapshot_id, second.snapshot_id)
+
     def test_live_search_binding_uses_real_pansou_results(self):
         pansou_client = load_pansou_module(self)
 
@@ -438,6 +451,10 @@ class PansouTransferBindingTests(unittest.TestCase):
         self.assertGreater(len(snapshot), 0)
         self.assertEqual(len(chosen_urls), 1)
         self.assertTrue(str(chosen_urls[0]))
+        if len(result_bucket) <= 1:
+            self.skipTest(
+                "Live search returned only one result; cannot verify order-sensitive snapshot_id behavior"
+            )
         self.assertNotEqual(snapshot.snapshot_id, mirrored_snapshot.snapshot_id)
 
 
