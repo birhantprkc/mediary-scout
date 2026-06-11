@@ -9,6 +9,11 @@ import {
 import type { AgentNodes, ResourceProvider, StorageExecutor } from "./ports.js";
 import type { WorkflowRepository } from "./repository.js";
 import { runType2InitializationAndPersist } from "./runner.js";
+import {
+  prepareTrackingTarget,
+  type PreparedTrackingTarget,
+  type TmdbMetadataProvider,
+} from "./tmdb-provider.js";
 
 export type TrackingInitializationRequestStatus = "already_running" | "already_tracked" | "completed";
 
@@ -28,6 +33,56 @@ export interface TrackingInitializationRequestResult {
   workflowStatus: WorkflowStatus | null;
   notification: NotificationEvent | null;
   progress: EpisodeProgressSummary;
+}
+
+export interface TrackingFromTmdbSelectionInput {
+  tmdbId: number;
+  mediaType: "tv";
+  seasonNumber: number;
+  qualityPreference: string;
+  storageDirectoryId: string;
+  metadataProvider: TmdbMetadataProvider;
+  resourceProvider: ResourceProvider;
+  storage: StorageExecutor;
+  agents: AgentNodes;
+  repository: WorkflowRepository;
+  createWorkflowRunId?: () => string;
+  now?: () => string;
+}
+
+export interface TrackingFromTmdbSelectionResult extends PreparedTrackingTarget {
+  request: TrackingInitializationRequestResult;
+}
+
+export async function requestTrackingFromTmdbSelection(
+  input: TrackingFromTmdbSelectionInput,
+): Promise<TrackingFromTmdbSelectionResult> {
+  const target = await prepareTrackingTarget({
+    tmdbId: input.tmdbId,
+    mediaType: input.mediaType,
+    seasonNumber: input.seasonNumber,
+    qualityPreference: input.qualityPreference,
+    storageDirectoryId: input.storageDirectoryId,
+    metadataProvider: input.metadataProvider,
+  });
+
+  const requestInput: Parameters<typeof requestTrackingInitialization>[0] = {
+    title: target.title,
+    season: target.season,
+    keyword: target.keyword,
+    resourceProvider: input.resourceProvider,
+    storage: input.storage,
+    agents: input.agents,
+    repository: input.repository,
+    ...(input.createWorkflowRunId ? { createWorkflowRunId: input.createWorkflowRunId } : {}),
+    ...(input.now ? { now: input.now } : {}),
+  };
+  const request = await requestTrackingInitialization(requestInput);
+
+  return {
+    ...target,
+    request,
+  };
 }
 
 export async function requestTrackingInitialization(input: {

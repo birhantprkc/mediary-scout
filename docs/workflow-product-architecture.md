@@ -174,6 +174,13 @@ It uses TMDB details and season metadata, including `last_episode_to_air` when
 it belongs to the selected season, but it remains a prepare step rather than a
 browser render dependency.
 
+The route-facing command is `requestTrackingFromTmdbSelection()`. It is the
+shape a future Next.js server action or route handler should call after the
+user confirms a TMDB candidate. The command prepares the tracking target, then
+delegates to `requestTrackingInitialization()` so reservation, idempotency,
+type2 execution, persistence, and UI progress summary all stay in one tested
+server-side path.
+
 ## Product Surface Boundary
 
 The first product surface should be small and practical:
@@ -1190,6 +1197,12 @@ but the server must still own the idempotency rule. The command layer should:
 
 This gives the future Next.js route a single safe function to call instead of
 letting route handlers duplicate workflow rules.
+
+For the TMDB-backed first version, that function is
+`requestTrackingFromTmdbSelection()`: route handlers should pass the selected
+TMDB tv id, season number, quality preference, storage directory id, and server
+adapters. They should not hand-build `MediaTitle` or `TrackedSeason`, and they
+should not call PanSou or agent nodes directly.
 
 The next hardening step is stale-run recovery. If a worker crashes after
 reservation and before marking the run failed or succeeded, the active workflow
