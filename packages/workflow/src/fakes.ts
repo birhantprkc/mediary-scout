@@ -28,6 +28,7 @@ export interface TransferOutcome {
 export class FakeResourceProvider implements ResourceProvider {
   private readonly keywordResults: Record<string, CandidateFixture[]>;
   private readonly keywordErrors: Record<string, string>;
+  private nextSnapshotNumber = 1;
 
   constructor(input: { keywordResults: Record<string, CandidateFixture[]>; keywordErrors?: Record<string, string> }) {
     this.keywordResults = input.keywordResults;
@@ -40,10 +41,11 @@ export class FakeResourceProvider implements ResourceProvider {
       throw new Error(error);
     }
 
-    const snapshotId = "snapshot_1";
+    const snapshotId = `snapshot_${this.nextSnapshotNumber}`;
+    this.nextSnapshotNumber += 1;
     const fixtures = this.keywordResults[input.keyword] ?? [];
     const candidates: ResourceCandidate[] = fixtures.map((fixture, index) => ({
-      id: `candidate_${index + 1}`,
+      id: `${snapshotId}_candidate_${index + 1}`,
       snapshotId,
       index,
       title: fixture.title,
@@ -82,7 +84,7 @@ export class FakeStorageExecutor implements StorageExecutor {
         files.map((file) => ({ ...file })),
       ]),
     );
-    this.transferOutcomes = input.transferOutcomes ?? {};
+    this.transferOutcomes = cloneTransferOutcomes(input.transferOutcomes ?? {});
     this.nestedDirectories = new Set(input.nestedDirectories ?? []);
   }
 
@@ -224,5 +226,21 @@ export class FakeAgentNodes implements AgentNodes {
 }
 
 function isProviderAheadEpisode(episodeCode: string, latestAiredEpisode: number): boolean {
-  return episodeNumberFromCode(episodeCode) > latestAiredEpisode;
+  try {
+    return episodeNumberFromCode(episodeCode) > latestAiredEpisode;
+  } catch {
+    return false;
+  }
+}
+
+function cloneTransferOutcomes(transferOutcomes: Record<string, TransferOutcome>): Record<string, TransferOutcome> {
+  return Object.fromEntries(
+    Object.entries(transferOutcomes).map(([candidateId, outcome]) => [
+      candidateId,
+      {
+        ...outcome,
+        files: outcome.files.map((file) => ({ ...file })),
+      },
+    ]),
+  );
 }

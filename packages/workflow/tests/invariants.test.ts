@@ -188,6 +188,24 @@ describe("fake adapters", () => {
     expect(snapshot.candidates.map((candidate) => candidate.episodeHints)).toEqual([["S01E13"], ["S01E14"]]);
   });
 
+  it("uses distinct stable ids across multiple resource snapshots", async () => {
+    const provider = new FakeResourceProvider({
+      keywordResults: {
+        "翘楚 4K": [{ title: "翘楚 S01E13 4K", episodeHints: ["S01E13"] }],
+        "翘楚 1080p": [{ title: "翘楚 S01E13 1080p", episodeHints: ["S01E13"] }],
+      },
+    });
+
+    const first = await provider.search({ keyword: "翘楚 4K" });
+    const second = await provider.search({ keyword: "翘楚 1080p" });
+
+    expect([first.id, second.id]).toEqual(["snapshot_1", "snapshot_2"]);
+    expect(first.candidates.map((candidate) => candidate.id)).toEqual(["snapshot_1_candidate_1"]);
+    expect(second.candidates.map((candidate) => candidate.id)).toEqual(["snapshot_2_candidate_1"]);
+    expect(first.candidates.map((candidate) => candidate.index)).toEqual([0]);
+    expect(second.candidates.map((candidate) => candidate.index)).toEqual([0]);
+  });
+
   it("can simulate a transfer with no target directory change", async () => {
     const storage = new FakeStorageExecutor({
       directories: { dir_1: [] },
@@ -209,6 +227,46 @@ describe("fake adapters", () => {
 
     expect(attempt.status).toBe("no_target_change");
     expect(files).toEqual([]);
+  });
+
+  it("uses constructor-time copies of configured transfer outcome files", async () => {
+    const outcomeFiles: VerifiedFile[] = [
+      {
+        id: "file_13",
+        storageDirectoryId: "source_dir",
+        name: "Show.S01E13.mkv",
+        sizeBytes: 100,
+        episodeCode: "S01E13",
+        providerFileId: "provider_13",
+      },
+    ];
+    const storage = new FakeStorageExecutor({
+      directories: { dir_1: [] },
+      transferOutcomes: {
+        candidate_1: {
+          status: "succeeded",
+          providerMessage: "ok",
+          files: outcomeFiles,
+        },
+      },
+    });
+    outcomeFiles.push({
+      id: "file_14",
+      storageDirectoryId: "source_dir",
+      name: "Show.S01E14.mkv",
+      sizeBytes: 100,
+      episodeCode: "S01E14",
+      providerFileId: "provider_14",
+    });
+
+    await storage.transfer({
+      workflowRunId: "run_1",
+      directoryId: "dir_1",
+      candidateId: "candidate_1",
+    });
+    const files = await storage.listVideoFiles("dir_1");
+
+    expect(files.map((file) => file.id)).toEqual(["file_13"]);
   });
 
   it("fake agent selects candidates that cover missing episodes", async () => {
@@ -234,5 +292,31 @@ describe("fake adapters", () => {
 
     expect(decision.selectedCandidateIds).toEqual(["candidate_1"]);
     expect(decision.episodeMapping).toEqual({ candidate_1: ["S01E13"] });
+  });
+
+  it("fake agent ignores invalid episode hints when mapping provider-ahead episodes", async () => {
+    const agent = new FakeAgentNodes();
+    const decision = await agent.selectEpisodeCoverage({
+      snapshotId: "snapshot_1",
+      candidates: [
+        {
+          id: "candidate_1",
+          snapshotId: "snapshot_1",
+          index: 0,
+          title: "翘楚 S01E13 with provider noise",
+          type: "115",
+          source: "fake",
+          episodeHints: ["S01E13", "noise"],
+          qualityHints: ["4K"],
+          providerPayload: {},
+        },
+      ],
+      missingEpisodes: ["S01E13"],
+      latestAiredEpisode: 14,
+    });
+
+    expect(decision.selectedCandidateIds).toEqual(["candidate_1"]);
+    expect(decision.episodeMapping).toEqual({ candidate_1: ["S01E13"] });
+    expect(decision.providerAheadEpisodeMapping).toEqual({});
   });
 });
