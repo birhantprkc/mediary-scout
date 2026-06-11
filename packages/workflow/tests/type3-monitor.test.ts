@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   createEpisodeStates,
-  FakeAgentNodes,
   FakeResourceProvider,
   FakeStorageExecutor,
   reconcileVerifiedFiles,
   runType3Monitoring,
+  type AgentDecision,
+  type AgentNodes,
   type MediaTitle,
+  type ResourceCandidate,
   type TrackedSeason,
   type VerifiedFile,
 } from "../src/index.js";
@@ -132,7 +134,7 @@ describe("runType3Monitoring", () => {
       keyword: "翘楚 4K",
       resourceProvider,
       storage,
-      agents: new FakeAgentNodes(),
+      agents: new PrimaryOnlyAgentNodes(),
     });
 
     expect(result.status).toBe("succeeded");
@@ -146,4 +148,111 @@ describe("runType3Monitoring", () => {
     expect(result.notification.body).toContain("2 episodes restored");
     expect(result.notifications).toEqual([result.notification]);
   });
+
+  it("rejects agent decisions that reference candidates outside the current snapshot", async () => {
+    const { title, season } = qiaochuFixture();
+    const existingFiles: VerifiedFile[] = [];
+    const initialEpisodes = createEpisodeStates({
+      trackedSeasonId: season.id,
+      seasonNumber: season.seasonNumber,
+      totalEpisodes: season.totalEpisodes,
+      latestAiredEpisode: 1,
+    });
+    const storage = new FakeStorageExecutor({
+      directories: { [season.storageDirectoryId]: existingFiles },
+      transferOutcomes: {
+        snapshot_99_candidate_1: {
+          status: "succeeded",
+          providerMessage: "stale candidate should never transfer",
+          files: [
+            {
+              id: "stale_file_01",
+              storageDirectoryId: season.storageDirectoryId,
+              name: "翘楚.S01E01.stale.mkv",
+              sizeBytes: 1,
+              episodeCode: "S01E01",
+              providerFileId: "stale_provider_01",
+            },
+          ],
+        },
+      },
+    });
+    const resourceProvider = new FakeResourceProvider({
+      keywordResults: {
+        "翘楚 4K": [{ title: "翘楚 S01E01 current", episodeHints: ["S01E01"] }],
+      },
+    });
+
+    await expect(
+      runType3Monitoring({
+        title,
+        season: { ...season, latestAiredEpisode: 1 },
+        episodes: initialEpisodes,
+        keyword: "翘楚 4K",
+        resourceProvider,
+        storage,
+        agents: new StaleSnapshotAgentNodes(),
+      }),
+    ).rejects.toThrow("Agent decision referenced a different resource snapshot");
+
+    await expect(storage.listVideoFiles(season.storageDirectoryId)).resolves.toEqual([]);
+  });
 });
+
+class PrimaryOnlyAgentNodes implements AgentNodes {
+  async generateKeywords(): Promise<{ keywords: string[]; reason: string }> {
+    return {
+      keywords: [],
+      reason: "not used",
+    };
+  }
+
+  async selectEpisodeCoverage(input: {
+    snapshotId: string;
+    candidates: ResourceCandidate[];
+    missingEpisodes: string[];
+    latestAiredEpisode: number;
+  }): Promise<AgentDecision> {
+    const primary = input.candidates[0];
+    if (!primary) {
+      throw new Error("Expected at least one primary candidate");
+    }
+
+    return {
+      node: "primary_only",
+      snapshotId: input.snapshotId,
+      selectedCandidateIds: [primary.id],
+      episodeMapping: {
+        [primary.id]: primary.episodeHints.filter((episodeCode) => input.missingEpisodes.includes(episodeCode)),
+      },
+      providerAheadEpisodeMapping: {},
+      rejectedCandidateIds: input.candidates.slice(1).map((candidate) => candidate.id),
+      confidence: "medium",
+      reason: `Selected only primary with latest aired ${input.latestAiredEpisode}`,
+    };
+  }
+}
+
+class StaleSnapshotAgentNodes implements AgentNodes {
+  async generateKeywords(): Promise<{ keywords: string[]; reason: string }> {
+    return {
+      keywords: [],
+      reason: "not used",
+    };
+  }
+
+  async selectEpisodeCoverage(): Promise<AgentDecision> {
+    return {
+      node: "stale_snapshot",
+      snapshotId: "snapshot_99",
+      selectedCandidateIds: ["snapshot_99_candidate_1"],
+      episodeMapping: {
+        snapshot_99_candidate_1: ["S01E01"],
+      },
+      providerAheadEpisodeMapping: {},
+      rejectedCandidateIds: [],
+      confidence: "high",
+      reason: "stale decision from a previous search",
+    };
+  }
+}

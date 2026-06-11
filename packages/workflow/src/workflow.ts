@@ -64,6 +64,7 @@ export async function runType2Initialization(input: {
     missingEpisodes,
     latestAiredEpisode: input.season.latestAiredEpisode,
   });
+  assertDecisionUsesSnapshot(decision, snapshot.candidates, snapshot.id);
   const transferAttempts: TransferAttempt[] = [];
   for (const candidateId of decision.selectedCandidateIds) {
     transferAttempts.push(
@@ -171,6 +172,7 @@ export async function runType3Monitoring(input: {
     missingEpisodes: actionableMissing,
     latestAiredEpisode: input.season.latestAiredEpisode,
   });
+  assertDecisionUsesSnapshot(decision, snapshot.candidates, snapshot.id);
 
   const transferAttempts: TransferAttempt[] = [];
   const restored = new Set<string>();
@@ -250,5 +252,21 @@ function addRestoredEpisodes(restored: Set<string>, missingEpisodes: string[], f
     if (missingEpisodes.includes(file.episodeCode)) {
       restored.add(file.episodeCode);
     }
+  }
+}
+
+function assertDecisionUsesSnapshot(
+  decision: AgentDecision,
+  candidates: { id: string }[],
+  snapshotId: string,
+): void {
+  if (decision.snapshotId !== snapshotId) {
+    throw new Error("Agent decision referenced a different resource snapshot");
+  }
+
+  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+  const unknownCandidateIds = decision.selectedCandidateIds.filter((candidateId) => !candidateIds.has(candidateId));
+  if (unknownCandidateIds.length > 0) {
+    throw new Error(`Agent decision selected candidates outside the current resource snapshot: ${unknownCandidateIds.join(", ")}`);
   }
 }
