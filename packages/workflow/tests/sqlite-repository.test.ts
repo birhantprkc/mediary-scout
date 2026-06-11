@@ -100,6 +100,51 @@ describe("SQLiteWorkflowRepository", () => {
     expect(loaded?.transferAttempts[0]?.candidateId).toBe("snapshot_1_candidate_1");
   });
 
+  it("replaces an existing workflow run snapshot without foreign key failures", async () => {
+    database = new DatabaseSync(":memory:");
+    const repository = new SQLiteWorkflowRepository(database);
+    const snapshot = workflowPersistenceFixture();
+    await repository.saveWorkflowRunSnapshot(snapshot);
+
+    const replacement = workflowPersistenceFixture({
+      workflowRun: {
+        ...snapshot.workflowRun,
+        status: "partial",
+        finishedAt: "2026-06-11T00:02:00.000Z",
+      },
+      episodes: [
+        ...snapshot.episodes,
+        {
+          trackedSeasonId: snapshot.season.id,
+          episodeCode: "S01E03",
+          airDate: null,
+          title: "Episode 3",
+          airStatus: "unknown",
+          obtained: true,
+          metadataStatus: "provider_ahead",
+          verifiedFileIds: ["file_3"],
+        },
+      ],
+      notifications: [
+        {
+          ...snapshot.notifications[0]!,
+          body: "replacement saved",
+        },
+      ],
+    });
+
+    await repository.saveWorkflowRunSnapshot(replacement);
+
+    const loaded = await repository.getWorkflowRunSnapshot("run_1");
+    expect(loaded?.workflowRun.status).toBe("partial");
+    expect(loaded?.episodes.map((episode) => episode.episodeCode)).toEqual(["S01E01", "S01E02", "S01E03"]);
+    expect(loaded?.providerAheadEpisodes).toEqual(["S01E03"]);
+    expect(loaded?.notifications).toHaveLength(1);
+    expect(loaded?.notifications[0]?.body).toBe("replacement saved");
+    expect(countRows(database, "resource_snapshots")).toBe(1);
+    expect(countRows(database, "agent_decisions")).toBe(1);
+  });
+
   it("lists episode state for a tracked season", async () => {
     database = new DatabaseSync(":memory:");
     const repository = new SQLiteWorkflowRepository(database);

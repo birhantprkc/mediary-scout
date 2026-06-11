@@ -101,11 +101,12 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
       this.upsertMediaTitle(snapshot.title);
       this.upsertTrackedSeason(snapshot.season);
       this.upsertWorkflowRun(snapshot.workflowRun);
-      this.replaceEpisodeStates(snapshot.season.id, snapshot.episodes);
-      this.replaceResourceSnapshots(snapshot.workflowRun.id, snapshot.resourceSnapshots);
-      this.replaceAgentDecisions(snapshot.workflowRun.id, snapshot.decisions);
-      this.replaceTransferAttempts(snapshot.workflowRun.id, snapshot.transferAttempts);
-      this.replaceNotifications(snapshot.workflowRun.id, snapshot.notifications);
+      this.deleteWorkflowRunChildren(snapshot.workflowRun.id, snapshot.season.id);
+      this.insertEpisodeStates(snapshot.season.id, snapshot.episodes);
+      this.insertResourceSnapshots(snapshot.workflowRun.id, snapshot.resourceSnapshots);
+      this.insertAgentDecisions(snapshot.workflowRun.id, snapshot.decisions);
+      this.insertTransferAttempts(snapshot.workflowRun.id, snapshot.transferAttempts);
+      this.insertNotifications(snapshot.workflowRun.id, snapshot.notifications);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -184,8 +185,15 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
       .run(workflowRun.id, workflowRun.trackedSeasonId, toJson(workflowRun));
   }
 
-  private replaceEpisodeStates(trackedSeasonId: string, episodes: EpisodeState[]): void {
+  private deleteWorkflowRunChildren(workflowRunId: string, trackedSeasonId: string): void {
+    this.database.prepare("DELETE FROM notifications WHERE workflow_run_id = ?").run(workflowRunId);
+    this.database.prepare("DELETE FROM transfer_attempts WHERE workflow_run_id = ?").run(workflowRunId);
+    this.database.prepare("DELETE FROM agent_decisions WHERE workflow_run_id = ?").run(workflowRunId);
+    this.database.prepare("DELETE FROM resource_snapshots WHERE workflow_run_id = ?").run(workflowRunId);
     this.database.prepare("DELETE FROM episode_states WHERE tracked_season_id = ?").run(trackedSeasonId);
+  }
+
+  private insertEpisodeStates(trackedSeasonId: string, episodes: EpisodeState[]): void {
     const insert = this.database.prepare(
       "INSERT INTO episode_states (tracked_season_id, episode_code, payload) VALUES (?, ?, ?)",
     );
@@ -194,8 +202,7 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
     }
   }
 
-  private replaceResourceSnapshots(workflowRunId: string, snapshots: ResourceSnapshot[]): void {
-    this.database.prepare("DELETE FROM resource_snapshots WHERE workflow_run_id = ?").run(workflowRunId);
+  private insertResourceSnapshots(workflowRunId: string, snapshots: ResourceSnapshot[]): void {
     const insert = this.database.prepare(
       "INSERT INTO resource_snapshots (id, workflow_run_id, ordinal, payload) VALUES (?, ?, ?, ?)",
     );
@@ -204,8 +211,7 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
     });
   }
 
-  private replaceAgentDecisions(workflowRunId: string, decisions: AgentDecision[]): void {
-    this.database.prepare("DELETE FROM agent_decisions WHERE workflow_run_id = ?").run(workflowRunId);
+  private insertAgentDecisions(workflowRunId: string, decisions: AgentDecision[]): void {
     const insert = this.database.prepare(
       "INSERT INTO agent_decisions (workflow_run_id, ordinal, snapshot_id, payload) VALUES (?, ?, ?, ?)",
     );
@@ -214,8 +220,7 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
     });
   }
 
-  private replaceTransferAttempts(workflowRunId: string, attempts: TransferAttempt[]): void {
-    this.database.prepare("DELETE FROM transfer_attempts WHERE workflow_run_id = ?").run(workflowRunId);
+  private insertTransferAttempts(workflowRunId: string, attempts: TransferAttempt[]): void {
     const insert = this.database.prepare(
       "INSERT INTO transfer_attempts (id, workflow_run_id, ordinal, candidate_id, payload) VALUES (?, ?, ?, ?, ?)",
     );
@@ -224,8 +229,7 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
     });
   }
 
-  private replaceNotifications(workflowRunId: string, notifications: NotificationEvent[]): void {
-    this.database.prepare("DELETE FROM notifications WHERE workflow_run_id = ?").run(workflowRunId);
+  private insertNotifications(workflowRunId: string, notifications: NotificationEvent[]): void {
     const insert = this.database.prepare(
       "INSERT INTO notifications (id, workflow_run_id, ordinal, payload) VALUES (?, ?, ?, ?)",
     );
