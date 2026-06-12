@@ -28,6 +28,7 @@ export async function runType2InitializationAndPersist(input: {
   agents: AgentNodes;
   repository: WorkflowRepository;
   workflowRun: WorkflowRunMetadata;
+  storageParentDirectoryId?: string;
 }): Promise<WorkflowResult> {
   const result = await runType2Initialization({
     title: input.title,
@@ -37,11 +38,14 @@ export async function runType2InitializationAndPersist(input: {
     storage: input.storage,
     agents: input.agents,
     workflowRunId: input.workflowRun.id,
+    ...(input.storageParentDirectoryId === undefined
+      ? {}
+      : { storageParentDirectoryId: input.storageParentDirectoryId }),
   });
 
   await persistWorkflowResult({
     title: input.title,
-    season: input.season,
+    season: result.season,
     workflowRun: toWorkflowRun("type2_init", input.season.id, input.workflowRun, result),
     result,
     repository: input.repository,
@@ -74,7 +78,7 @@ export async function runType3MonitoringAndPersist(input: {
 
   await persistWorkflowResult({
     title: input.title,
-    season: input.season,
+    season: result.season,
     workflowRun: toWorkflowRun("type3_monitor", input.season.id, input.workflowRun, result),
     result,
     repository: input.repository,

@@ -413,3 +413,101 @@ class TargetFilteringAgentNodes extends FakeAgentNodes {
     };
   }
 }
+
+describe("runType2Initialization canonical landing directory", () => {
+  it("creates Title (Year)/Season N under the parent when the season has no directory", async () => {
+    const title: MediaTitle = {
+      id: "title_show",
+      tmdbId: 1,
+      type: "tv",
+      title: "Show",
+      originalTitle: "Show",
+      year: 2026,
+      aliases: [],
+    };
+    const season: TrackedSeason = {
+      id: "season_show_1",
+      mediaTitleId: title.id,
+      seasonNumber: 1,
+      status: "active",
+      qualityPreference: "4K",
+      storageDirectoryId: "",
+      totalEpisodes: 1,
+      latestAiredEpisode: 1,
+      latestAiredSource: "metadata",
+    };
+    const storage = new FakeStorageExecutor({
+      transferOutcomes: {
+        snapshot_1_candidate_1: {
+          status: "succeeded",
+          providerMessage: "",
+          files: [
+            {
+              id: "file_S01E01",
+              storageDirectoryId: "overridden_by_fake",
+              name: "Show.S01E01.mkv",
+              sizeBytes: 1_000_000_000,
+              episodeCode: "S01E01",
+              providerFileId: "provider_S01E01",
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await runType2Initialization({
+      title,
+      season,
+      keyword: "Show 4K",
+      resourceProvider: new FakeResourceProvider({
+        keywordResults: {
+          "Show 4K": [{ title: "Show S01E01 4K", episodeHints: ["S01E01"] }],
+        },
+      }),
+      storage,
+      agents: new FakeAgentNodes(),
+      storageParentDirectoryId: "library_root",
+    });
+
+    expect(result.season.storageDirectoryId).toBe("library_root_Show (2026)_1_Season 1_2");
+    expect(result.status).toBe("succeeded");
+    expect(result.obtainedEpisodes).toEqual(["S01E01"]);
+    expect(result.auditEvents.map((event) => event.type)).toContain("landing_directory_created");
+    const files = await storage.listVideoFiles(result.season.storageDirectoryId);
+    expect(files.map((file) => file.episodeCode)).toEqual(["S01E01"]);
+  });
+
+  it("throws a config error when the season has no directory and no parent is given", async () => {
+    const title: MediaTitle = {
+      id: "title_show",
+      tmdbId: 1,
+      type: "tv",
+      title: "Show",
+      originalTitle: "Show",
+      year: 2026,
+      aliases: [],
+    };
+    const season: TrackedSeason = {
+      id: "season_show_1",
+      mediaTitleId: title.id,
+      seasonNumber: 1,
+      status: "active",
+      qualityPreference: "4K",
+      storageDirectoryId: "",
+      totalEpisodes: 1,
+      latestAiredEpisode: 1,
+      latestAiredSource: "metadata",
+    };
+
+    await expect(
+      runType2Initialization({
+        title,
+        season,
+        keyword: "Show 4K",
+        resourceProvider: new FakeResourceProvider({ keywordResults: {} }),
+        storage: new FakeStorageExecutor(),
+        agents: new FakeAgentNodes(),
+      }),
+    ).rejects.toThrow("MEDIA_TRACK_STORAGE_PARENT_REQUIRED");
+  });
+});

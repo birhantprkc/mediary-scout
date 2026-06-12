@@ -40,7 +40,8 @@ export interface TrackingFromTmdbSelectionInput {
   mediaType: "tv";
   seasonNumber: number;
   qualityPreference: string;
-  storageDirectoryId: string;
+  storageDirectoryId?: string;
+  storageParentDirectoryId?: string;
   metadataProvider: TmdbMetadataProvider;
   resourceProvider: ResourceProvider;
   storage: StorageExecutor;
@@ -153,7 +154,7 @@ export async function requestTrackingFromTmdbSelection(
     mediaType: input.mediaType,
     seasonNumber: input.seasonNumber,
     qualityPreference: input.qualityPreference,
-    storageDirectoryId: input.storageDirectoryId,
+    ...(input.storageDirectoryId === undefined ? {} : { storageDirectoryId: input.storageDirectoryId }),
     metadataProvider: input.metadataProvider,
   });
 
@@ -170,6 +171,9 @@ export async function requestTrackingFromTmdbSelection(
     ...(input.staleActiveRunTimeoutMs !== undefined
       ? { staleActiveRunTimeoutMs: input.staleActiveRunTimeoutMs }
       : {}),
+    ...(input.storageParentDirectoryId === undefined
+      ? {}
+      : { storageParentDirectoryId: input.storageParentDirectoryId }),
   };
   const request = await requestTrackingInitialization(requestInput);
 
@@ -190,6 +194,7 @@ export async function requestTrackingInitialization(input: {
   createWorkflowRunId?: () => string;
   now?: () => string;
   staleActiveRunTimeoutMs?: number;
+  storageParentDirectoryId?: string;
 }): Promise<TrackingInitializationRequestResult> {
   const now = input.now ?? (() => new Date().toISOString());
   const workflowRunId = input.createWorkflowRunId?.() ?? crypto.randomUUID();
@@ -264,6 +269,9 @@ export async function requestTrackingInitialization(input: {
       storage: input.storage,
       agents: input.agents,
       repository: input.repository,
+      ...(input.storageParentDirectoryId === undefined
+        ? {}
+        : { storageParentDirectoryId: input.storageParentDirectoryId }),
       workflowRun: {
         id: workflowRunId,
         startedAt,

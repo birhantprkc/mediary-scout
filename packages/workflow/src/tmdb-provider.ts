@@ -30,7 +30,7 @@ export interface TvTrackingTargetInput {
   mediaType: Extract<MediaType, "tv">;
   seasonNumber: number;
   qualityPreference: string;
-  storageDirectoryId: string;
+  storageDirectoryId?: string;
   metadataProvider: TmdbMetadataProvider;
 }
 
@@ -219,7 +219,7 @@ export async function prepareTrackingTarget(input: TvTrackingTargetInput): Promi
       seasonNumber: input.seasonNumber,
       status: latestAiredEpisode >= totalEpisodes ? "completed" : "active",
       qualityPreference: input.qualityPreference,
-      storageDirectoryId: input.storageDirectoryId,
+      storageDirectoryId: input.storageDirectoryId ?? "",
       totalEpisodes,
       latestAiredEpisode,
       latestAiredSource,

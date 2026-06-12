@@ -107,6 +107,7 @@ export async function runNextQueuedWorkflow() {
     resourceProvider: getWorkerResourceProvider(),
     storage: getWorkerStorageExecutor(),
     agents: getAgentNodes(),
+    storageParentDirectoryId: storageParentDirectoryId(),
   });
 }
 
@@ -289,8 +290,18 @@ function episodeCodes(seasonNumber: number, count: number): string[] {
   return Array.from({ length: count }, (_, index) => episodeCode(seasonNumber, index + 1));
 }
 
-function storageDirectoryIdForCandidate(candidateId: string): string {
-  return process.env.MEDIA_TRACK_DEFAULT_TV_STORAGE_DIRECTORY_ID ?? `web_${candidateId}`;
+function storageDirectoryIdForCandidate(_candidateId: string): string {
+  // Empty means "let the Type 2 workflow create the canonical
+  // `Title (Year)/Season N` directory under the configured parent".
+  return process.env.MEDIA_TRACK_DEFAULT_TV_STORAGE_DIRECTORY_ID ?? "";
+}
+
+function storageParentDirectoryId(): string {
+  return (
+    process.env.MEDIA_TRACK_TV_PARENT_CID ??
+    process.env.MEDIA_TRACK_115_TEST_ROOT_CID ??
+    "fake_library_root"
+  );
 }
 
 function defaultQuality(): string {

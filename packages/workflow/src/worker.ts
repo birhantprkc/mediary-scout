@@ -24,6 +24,7 @@ export async function runQueuedType2Workflow(input: {
   storage: StorageExecutor;
   agents: AgentNodes;
   now?: () => string;
+  storageParentDirectoryId?: string;
 }): Promise<QueuedType2WorkerResult> {
   const now = input.now ?? (() => new Date().toISOString());
   const claimed = await input.repository.claimNextQueuedWorkflowRun({
@@ -44,6 +45,9 @@ export async function runQueuedType2Workflow(input: {
       storage: input.storage,
       agents: input.agents,
       repository: input.repository,
+      ...(input.storageParentDirectoryId === undefined
+        ? {}
+        : { storageParentDirectoryId: input.storageParentDirectoryId }),
       workflowRun: {
         id: claimed.workflowRun.id,
         startedAt: claimed.workflowRun.startedAt,

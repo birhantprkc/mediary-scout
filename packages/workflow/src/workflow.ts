@@ -33,6 +33,8 @@ const DEFAULT_MAX_PLANNING_PASSES = 2;
 
 export interface WorkflowResult {
   status: WorkflowStatus;
+  /** The tracked season, updated when the workflow created its landing directory. */
+  season: TrackedSeason;
   episodes: EpisodeState[];
   obtainedEpisodes: string[];
   providerAheadEpisodes: string[];
@@ -53,14 +55,22 @@ export async function runType2Initialization(input: {
   agents: AgentNodes;
   workflowRunId?: string;
   maxPlanningPasses?: number;
+  storageParentDirectoryId?: string;
 }): Promise<WorkflowResult> {
   const workflowRunId = input.workflowRunId ?? TYPE2_WORKFLOW_RUN_ID;
   const auditEvents: AuditEvent[] = [];
+  const season = await ensureLandingDirectory({
+    title: input.title,
+    season: input.season,
+    storage: input.storage,
+    storageParentDirectoryId: input.storageParentDirectoryId,
+    auditEvents,
+  });
   const episodes = createEpisodeStates({
-    trackedSeasonId: input.season.id,
-    seasonNumber: input.season.seasonNumber,
-    totalEpisodes: input.season.totalEpisodes,
-    latestAiredEpisode: input.season.latestAiredEpisode,
+    trackedSeasonId: season.id,
+    seasonNumber: season.seasonNumber,
+    totalEpisodes: season.totalEpisodes,
+    latestAiredEpisode: season.latestAiredEpisode,
   });
   const missingEpisodes = actionableMissingEpisodes(episodes);
 
@@ -69,7 +79,7 @@ export async function runType2Initialization(input: {
       ? emptyAcquisitionOutcome()
       : await acquireMissingEpisodes({
           title: input.title,
-          season: input.season,
+          season,
           keyword: input.keyword,
           missingEpisodes,
           resourceProvider: input.resourceProvider,
@@ -80,14 +90,14 @@ export async function runType2Initialization(input: {
           maxPlanningPasses: input.maxPlanningPasses ?? DEFAULT_MAX_PLANNING_PASSES,
         });
 
-  await input.storage.flattenDirectory(input.season.storageDirectoryId);
+  await input.storage.flattenDirectory(season.storageDirectoryId);
   const verifiedFiles = await dedupeLandingDirectory({
     storage: input.storage,
-    directoryId: input.season.storageDirectoryId,
+    directoryId: season.storageDirectoryId,
     auditEvents,
   });
   const reconciledEpisodes = reconcileVerifiedFiles({
-    season: input.season,
+    season,
     episodes,
     files: verifiedFiles,
   });
@@ -118,6 +128,7 @@ export async function runType2Initialization(input: {
 
   return {
     status,
+    season,
     episodes: reconciledEpisodes,
     obtainedEpisodes,
     providerAheadEpisodes,
@@ -128,6 +139,43 @@ export async function runType2Initialization(input: {
     notifications: [notification],
     auditEvents,
   };
+}
+
+/**
+ * The canonical landing shape (`Title (Year)/Season N`) is created by the
+ * workflow itself, never improvised by callers — the flatten safety rule
+ * accepts exactly this shape.
+ */
+async function ensureLandingDirectory(input: {
+  title: MediaTitle;
+  season: TrackedSeason;
+  storage: StorageExecutor;
+  storageParentDirectoryId: string | undefined;
+  auditEvents: AuditEvent[];
+}): Promise<TrackedSeason> {
+  if (input.season.storageDirectoryId !== "") {
+    return input.season;
+  }
+  if (!input.storageParentDirectoryId) {
+    throw new Error(
+      "MEDIA_TRACK_STORAGE_PARENT_REQUIRED: tracked season has no storage directory and no storageParentDirectoryId was provided",
+    );
+  }
+  const showName = `${input.title.title} (${input.title.year})`;
+  const showDirectoryId = await input.storage.createDirectory({
+    name: showName,
+    parentId: input.storageParentDirectoryId,
+  });
+  const seasonDirectoryId = await input.storage.createDirectory({
+    name: `Season ${input.season.seasonNumber}`,
+    parentId: showDirectoryId,
+  });
+  input.auditEvents.push({
+    type: "landing_directory_created",
+    message: `Created canonical landing directory ${showName}/Season ${input.season.seasonNumber}`,
+    data: { showDirectoryId, seasonDirectoryId },
+  });
+  return { ...input.season, storageDirectoryId: seasonDirectoryId };
 }
 
 export async function runType3Monitoring(input: {
@@ -142,6 +190,11 @@ export async function runType3Monitoring(input: {
   maxPlanningPasses?: number;
 }): Promise<WorkflowResult> {
   const workflowRunId = input.workflowRunId ?? TYPE3_WORKFLOW_RUN_ID;
+  if (input.season.storageDirectoryId === "") {
+    throw new Error(
+      "MEDIA_TRACK_TRACKING_NOT_INITIALIZED: tracked season has no storage directory; run Type 2 initialization first",
+    );
+  }
   const auditEvents: AuditEvent[] = [];
   const currentFiles = await input.storage.listVideoFiles(input.season.storageDirectoryId);
   let episodes = reconcileVerifiedFiles({
@@ -169,6 +222,7 @@ export async function runType3Monitoring(input: {
     };
     return {
       status: "succeeded",
+      season: input.season,
       episodes,
       obtainedEpisodes: obtainedEpisodeCodes(episodes),
       providerAheadEpisodes: collectProviderAheadEpisodes(episodes),
@@ -240,6 +294,7 @@ export async function runType3Monitoring(input: {
 
   return {
     status,
+    season: input.season,
     episodes,
     obtainedEpisodes,
     providerAheadEpisodes,
