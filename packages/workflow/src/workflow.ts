@@ -1,23 +1,33 @@
 import {
   createEpisodeStates,
   reconcileVerifiedFiles,
+  type AcquisitionFailureEvidence,
   type AgentDecision,
   type AuditEvent,
-  type CandidateMatchDecision,
   type EpisodeState,
   type MediaTitle,
   type NotificationEvent,
-  type ResourceCandidate,
   type ResourceSnapshot,
   type TrackedSeason,
   type TransferAttempt,
   type WorkflowStatus,
 } from "./domain.js";
-import type { AgentNodes, ResourceProvider, StorageExecutor } from "./ports.js";
+import {
+  deriveAgentDecision,
+  validateAcquisitionPlan,
+  type SelectedTransferCandidate,
+} from "./plan-validation.js";
+import type {
+  AcquisitionPlanningResult,
+  AgentNodes,
+  ResourceProvider,
+  StorageExecutor,
+} from "./ports.js";
 
 const TYPE2_WORKFLOW_RUN_ID = "run_type2";
 const TYPE3_WORKFLOW_RUN_ID = "run_type3";
 const FIXED_CREATED_AT = "2026-01-01T00:00:00.000Z";
+const DEFAULT_MAX_PLANNING_PASSES = 2;
 
 export interface WorkflowResult {
   status: WorkflowStatus;
@@ -40,52 +50,33 @@ export async function runType2Initialization(input: {
   storage: StorageExecutor;
   agents: AgentNodes;
   workflowRunId?: string;
+  maxPlanningPasses?: number;
 }): Promise<WorkflowResult> {
   const workflowRunId = input.workflowRunId ?? TYPE2_WORKFLOW_RUN_ID;
+  const auditEvents: AuditEvent[] = [];
   const episodes = createEpisodeStates({
     trackedSeasonId: input.season.id,
     seasonNumber: input.season.seasonNumber,
     totalEpisodes: input.season.totalEpisodes,
     latestAiredEpisode: input.season.latestAiredEpisode,
   });
-  const missingEpisodes = episodes
-    .filter((episode) => episode.airStatus === "aired" && !episode.obtained)
-    .map((episode) => episode.episodeCode);
+  const missingEpisodes = actionableMissingEpisodes(episodes);
 
-  const auditEvents: AuditEvent[] = [];
-  const snapshot = await searchResourceSnapshot({
-    title: input.title,
-    keyword: input.keyword,
-    missingEpisodes,
-    resourceProvider: input.resourceProvider,
-    agents: input.agents,
-    auditEvents,
-  });
-  const matchedCandidates = await matchSnapshotCandidates({
-    title: input.title,
-    snapshot,
-    agents: input.agents,
-    auditEvents,
-  });
-
-  const decision = await input.agents.selectEpisodeCoverage({
-    snapshotId: snapshot.id,
-    candidates: matchedCandidates,
-    missingEpisodes,
-    latestAiredEpisode: input.season.latestAiredEpisode,
-  });
-  assertDecisionUsesSnapshot(decision, matchedCandidates, snapshot.id);
-  const transferAttempts: TransferAttempt[] = [];
-  for (const candidateId of decision.selectedCandidateIds) {
-    const candidate = requireCandidate(snapshot.candidates, candidateId);
-    transferAttempts.push(
-      await input.storage.transfer({
-        workflowRunId,
-        directoryId: input.season.storageDirectoryId,
-        candidate,
-      }),
-    );
-  }
+  const outcome =
+    missingEpisodes.length === 0
+      ? emptyAcquisitionOutcome()
+      : await acquireMissingEpisodes({
+          title: input.title,
+          season: input.season,
+          keyword: input.keyword,
+          missingEpisodes,
+          resourceProvider: input.resourceProvider,
+          storage: input.storage,
+          agents: input.agents,
+          workflowRunId,
+          auditEvents,
+          maxPlanningPasses: input.maxPlanningPasses ?? DEFAULT_MAX_PLANNING_PASSES,
+        });
 
   await input.storage.flattenDirectory(input.season.storageDirectoryId);
   const verifiedFiles = await input.storage.listVideoFiles(input.season.storageDirectoryId);
@@ -94,27 +85,39 @@ export async function runType2Initialization(input: {
     episodes,
     files: verifiedFiles,
   });
-  const obtainedEpisodes = reconciledEpisodes
-    .filter((episode) => episode.obtained)
-    .map((episode) => episode.episodeCode);
+  const obtainedEpisodes = obtainedEpisodeCodes(reconciledEpisodes);
   const providerAheadEpisodes = collectProviderAheadEpisodes(reconciledEpisodes);
-  const notification: NotificationEvent = {
-    id: `notification_${workflowRunId}`,
-    workflowRunId,
-    kind: "tracking_initialized",
-    title: `${input.title.title} tracking initialized`,
-    body: `${obtainedEpisodes.length} episodes obtained`,
-    createdAt: FIXED_CREATED_AT,
-  };
+  const status = resolveAcquisitionStatus({
+    missingBefore: missingEpisodes,
+    stillMissingAfter: actionableMissingEpisodes(reconciledEpisodes),
+  });
+  const notification: NotificationEvent =
+    status === "no_coverage"
+      ? {
+          id: `notification_${workflowRunId}`,
+          workflowRunId,
+          kind: "no_coverage",
+          title: `${input.title.title} no covering resource yet`,
+          body: `no covering resource found yet; ${obtainedEpisodes.length} episodes obtained`,
+          createdAt: FIXED_CREATED_AT,
+        }
+      : {
+          id: `notification_${workflowRunId}`,
+          workflowRunId,
+          kind: "tracking_initialized",
+          title: `${input.title.title} tracking initialized`,
+          body: `${obtainedEpisodes.length} episodes obtained`,
+          createdAt: FIXED_CREATED_AT,
+        };
 
   return {
-    status: "succeeded",
+    status,
     episodes: reconciledEpisodes,
     obtainedEpisodes,
     providerAheadEpisodes,
-    resourceSnapshots: [snapshot],
-    transferAttempts,
-    decisions: [decision],
+    resourceSnapshots: outcome.resourceSnapshots,
+    transferAttempts: outcome.transferAttempts,
+    decisions: outcome.decisions,
     notification,
     notifications: [notification],
     auditEvents,
@@ -130,6 +133,7 @@ export async function runType3Monitoring(input: {
   storage: StorageExecutor;
   agents: AgentNodes;
   workflowRunId?: string;
+  maxPlanningPasses?: number;
 }): Promise<WorkflowResult> {
   const workflowRunId = input.workflowRunId ?? TYPE3_WORKFLOW_RUN_ID;
   const auditEvents: AuditEvent[] = [];
@@ -146,11 +150,9 @@ export async function runType3Monitoring(input: {
     }),
     files: currentFiles,
   });
-  const actionableMissing = episodes
-    .filter((episode) => episode.airStatus === "aired" && !episode.obtained)
-    .map((episode) => episode.episodeCode);
+  const missingBefore = actionableMissingEpisodes(episodes);
 
-  if (actionableMissing.length === 0) {
+  if (missingBefore.length === 0) {
     const notification: NotificationEvent = {
       id: `notification_${workflowRunId}_noop`,
       workflowRunId,
@@ -162,7 +164,7 @@ export async function runType3Monitoring(input: {
     return {
       status: "succeeded",
       episodes,
-      obtainedEpisodes: episodes.filter((episode) => episode.obtained).map((episode) => episode.episodeCode),
+      obtainedEpisodes: obtainedEpisodeCodes(episodes),
       providerAheadEpisodes: collectProviderAheadEpisodes(episodes),
       resourceSnapshots: [],
       transferAttempts: [],
@@ -173,47 +175,18 @@ export async function runType3Monitoring(input: {
     };
   }
 
-  const snapshot = await searchResourceSnapshot({
+  const outcome = await acquireMissingEpisodes({
     title: input.title,
+    season: input.season,
     keyword: input.keyword,
-    missingEpisodes: actionableMissing,
+    missingEpisodes: missingBefore,
     resourceProvider: input.resourceProvider,
+    storage: input.storage,
     agents: input.agents,
+    workflowRunId,
     auditEvents,
+    maxPlanningPasses: input.maxPlanningPasses ?? DEFAULT_MAX_PLANNING_PASSES,
   });
-  const matchedCandidates = await matchSnapshotCandidates({
-    title: input.title,
-    snapshot,
-    agents: input.agents,
-    auditEvents,
-  });
-
-  const decision = await input.agents.selectEpisodeCoverage({
-    snapshotId: snapshot.id,
-    candidates: matchedCandidates,
-    missingEpisodes: actionableMissing,
-    latestAiredEpisode: input.season.latestAiredEpisode,
-  });
-  assertDecisionUsesSnapshot(decision, matchedCandidates, snapshot.id);
-
-  const transferAttempts: TransferAttempt[] = [];
-  const restored = new Set<string>();
-
-  for (const candidateId of decision.selectedCandidateIds) {
-    const candidate = requireCandidate(snapshot.candidates, candidateId);
-    transferAttempts.push(
-      await input.storage.transfer({
-        workflowRunId,
-        directoryId: input.season.storageDirectoryId,
-        candidate,
-      }),
-    );
-    addRestoredEpisodes(
-      restored,
-      actionableMissing,
-      await input.storage.listVideoFiles(input.season.storageDirectoryId),
-    );
-  }
 
   await input.storage.flattenDirectory(input.season.storageDirectoryId);
   const finalFiles = await input.storage.listVideoFiles(input.season.storageDirectoryId);
@@ -222,81 +195,216 @@ export async function runType3Monitoring(input: {
     episodes,
     files: finalFiles,
   });
-  const obtainedEpisodes = episodes.filter((episode) => episode.obtained).map((episode) => episode.episodeCode);
+  const obtainedEpisodes = obtainedEpisodeCodes(episodes);
   const providerAheadEpisodes = collectProviderAheadEpisodes(episodes);
-  const notification: NotificationEvent = {
-    id: `notification_${workflowRunId}`,
-    workflowRunId,
-    kind: "episodes_restored",
-    title: `${input.title.title} episodes restored`,
-    body: `${restored.size} episodes restored`,
-    createdAt: FIXED_CREATED_AT,
-  };
+  const stillMissingAfter = actionableMissingEpisodes(episodes);
+  const restoredCount = missingBefore.length - stillMissingAfter.length;
+  const status = resolveAcquisitionStatus({ missingBefore, stillMissingAfter });
+  const notification: NotificationEvent =
+    status === "no_coverage"
+      ? {
+          id: `notification_${workflowRunId}`,
+          workflowRunId,
+          kind: "no_coverage",
+          title: `${input.title.title} no covering resource yet`,
+          body: `no covering resource found yet; ${restoredCount} episodes restored`,
+          createdAt: FIXED_CREATED_AT,
+        }
+      : {
+          id: `notification_${workflowRunId}`,
+          workflowRunId,
+          kind: "episodes_restored",
+          title: `${input.title.title} episodes restored`,
+          body: `${restoredCount} episodes restored`,
+          createdAt: FIXED_CREATED_AT,
+        };
 
   return {
-    status: "succeeded",
+    status,
     episodes,
     obtainedEpisodes,
     providerAheadEpisodes,
-    resourceSnapshots: [snapshot],
-    transferAttempts,
-    decisions: [decision],
+    resourceSnapshots: outcome.resourceSnapshots,
+    transferAttempts: outcome.transferAttempts,
+    decisions: outcome.decisions,
     notification,
     notifications: [notification],
     auditEvents,
   };
 }
 
-function addRestoredEpisodes(restored: Set<string>, missingEpisodes: string[], files: { episodeCode: string }[]): void {
-  for (const file of files) {
-    if (missingEpisodes.includes(file.episodeCode)) {
-      restored.add(file.episodeCode);
-    }
-  }
+interface AcquisitionOutcome {
+  resourceSnapshots: ResourceSnapshot[];
+  decisions: AgentDecision[];
+  transferAttempts: TransferAttempt[];
 }
 
-async function searchResourceSnapshot(input: {
+function emptyAcquisitionOutcome(): AcquisitionOutcome {
+  return { resourceSnapshots: [], decisions: [], transferAttempts: [] };
+}
+
+/**
+ * The deterministic acquisition harness. The planning agent owns every
+ * semantic choice (keywords, target matching, episode mapping, selection);
+ * this loop owns every side effect and every verification. Recovery from a
+ * transfer that materializes nothing is a fresh agent pass that sees the
+ * failure evidence — never mechanical iteration over provider candidates.
+ */
+async function acquireMissingEpisodes(input: {
   title: MediaTitle;
+  season: TrackedSeason;
   keyword: string;
   missingEpisodes: string[];
   resourceProvider: ResourceProvider;
+  storage: StorageExecutor;
   agents: AgentNodes;
+  workflowRunId: string;
   auditEvents: AuditEvent[];
-}): Promise<ResourceSnapshot> {
-  const discovery = await input.agents.discoverResources({
-    title: input.title.title,
-    aliases: input.title.aliases,
-    missingEpisodes: input.missingEpisodes,
-    initialKeyword: input.keyword,
-    searchResources: async ({ keyword }) => input.resourceProvider.search({ keyword }),
-  });
+  maxPlanningPasses: number;
+}): Promise<AcquisitionOutcome> {
+  const resourceSnapshots: ResourceSnapshot[] = [];
+  const decisions: AgentDecision[] = [];
+  const transferAttempts: TransferAttempt[] = [];
+  let stillMissing = [...input.missingEpisodes];
+  let failureEvidence: AcquisitionFailureEvidence[] = [];
 
+  for (let pass = 1; pass <= input.maxPlanningPasses && stillMissing.length > 0; pass += 1) {
+    const planning = await input.agents.planAcquisition({
+      title: input.title.title,
+      aliases: input.title.aliases,
+      seasonNumber: input.season.seasonNumber,
+      qualityPreference: input.season.qualityPreference,
+      missingEpisodes: stillMissing,
+      latestAiredEpisode: input.season.latestAiredEpisode,
+      initialKeyword: input.keyword,
+      failureEvidence,
+      searchResources: async ({ keyword }) => input.resourceProvider.search({ keyword }),
+    });
+    resourceSnapshots.push(...planning.snapshots);
+    recordPlanningAudit({ auditEvents: input.auditEvents, planning, pass });
+
+    const validated = validateAcquisitionPlan({
+      plan: planning.plan,
+      snapshots: planning.snapshots,
+      missingEpisodes: stillMissing,
+      seasonNumber: input.season.seasonNumber,
+    });
+
+    if (validated.selectedSnapshot === null || validated.selectedCandidates.length === 0) {
+      // "No coverage" is an honest conclusion only when the agent saw real
+      // provider evidence. If searches errored and the successful ones all
+      // came back empty, the evidence is incomplete — that is an
+      // infrastructure failure to retry later, not a "no resource" verdict.
+      const searchErrors = planning.trace
+        .filter((event) => event.type === "tool_result" && isSearchErrorOutput(event.output))
+        .map((event) => (event as { output: { error: string } }).output.error);
+      const observedCandidateCount = planning.snapshots.reduce(
+        (count, snapshot) => count + snapshot.candidates.length,
+        0,
+      );
+      if (planning.snapshots.length === 0 || (searchErrors.length > 0 && observedCandidateCount === 0)) {
+        throw new Error(searchErrors[0] ?? "Planning agent produced no search observations");
+      }
+      input.auditEvents.push({
+        type: "acquisition_no_coverage",
+        message: `Planning pass ${pass} found no covering resource`,
+        data: { pass, reason: planning.plan.reason, stillMissing },
+      });
+      break;
+    }
+
+    decisions.push(
+      deriveAgentDecision({
+        plan: planning.plan,
+        missingEpisodes: stillMissing,
+        latestAiredEpisode: input.season.latestAiredEpisode,
+      }),
+    );
+
+    const passAttempts: TransferAttempt[] = [];
+    for (const selected of validated.selectedCandidates) {
+      const attempt = await input.storage.transfer({
+        workflowRunId: input.workflowRunId,
+        directoryId: input.season.storageDirectoryId,
+        candidate: selected.candidate,
+      });
+      passAttempts.push(attempt);
+      transferAttempts.push(attempt);
+    }
+
+    const filesAfterPass = await input.storage.listVideoFiles(input.season.storageDirectoryId);
+    const obtainedCodes = new Set(filesAfterPass.map((file) => file.episodeCode));
+    stillMissing = stillMissing.filter((code) => !obtainedCodes.has(code));
+
+    if (stillMissing.length > 0) {
+      failureEvidence = buildFailureEvidence({
+        selectedCandidates: validated.selectedCandidates,
+        attempts: passAttempts,
+        stillMissing,
+      });
+      input.auditEvents.push({
+        type: "acquisition_pass_incomplete",
+        message: `Planning pass ${pass} left ${stillMissing.length} episodes missing`,
+        data: { pass, stillMissing, failureEvidence },
+      });
+    }
+  }
+
+  return { resourceSnapshots, decisions, transferAttempts };
+}
+
+function buildFailureEvidence(input: {
+  selectedCandidates: SelectedTransferCandidate[];
+  attempts: TransferAttempt[];
+  stillMissing: string[];
+}): AcquisitionFailureEvidence[] {
+  const stillMissing = new Set(input.stillMissing);
+  return input.selectedCandidates.flatMap((selected, index) => {
+    const attempt = input.attempts[index];
+    if (attempt === undefined) {
+      return [];
+    }
+    const episodesStillMissing = selected.episodes.filter((code) => stillMissing.has(code));
+    if (episodesStillMissing.length === 0) {
+      return [];
+    }
+    return [
+      {
+        candidateId: selected.candidate.id,
+        candidateTitle: selected.candidate.title,
+        transferStatus: attempt.status,
+        providerMessage: attempt.providerMessage,
+        episodesStillMissing,
+      },
+    ];
+  });
+}
+
+function recordPlanningAudit(input: {
+  auditEvents: AuditEvent[];
+  planning: AcquisitionPlanningResult;
+  pass: number;
+}): void {
   input.auditEvents.push({
-    type: "resource_discovery_decision_created",
-    message: `Created resource discovery decision ${discovery.decision.node}`,
+    type: "acquisition_plan_created",
+    message: `Planning pass ${input.pass} produced plan from ${input.planning.plan.node}`,
     data: {
-      selectedSnapshotId: discovery.decision.selectedSnapshotId,
-      searchedKeywords: discovery.decision.searchedKeywords,
-      rejectedSnapshotIds: discovery.decision.rejectedSnapshotIds,
-      confidence: discovery.decision.confidence,
-      reason: discovery.decision.reason,
-      trace: discovery.trace,
+      pass: input.pass,
+      plan: input.planning.plan,
+      trace: input.planning.trace,
     },
   });
-  for (const event of discovery.trace) {
+  for (const event of input.planning.trace) {
     if (event.type !== "tool_result" || !isSearchErrorOutput(event.output)) {
       continue;
     }
     input.auditEvents.push({
       type: "keyword_search_failed",
       message: `Search keyword failed: ${event.output.keyword}`,
-      data: {
-        keyword: event.output.keyword,
-        error: event.output.error,
-      },
+      data: { keyword: event.output.keyword, error: event.output.error },
     });
   }
-  for (const snapshot of discovery.snapshots) {
+  for (const snapshot of input.planning.snapshots) {
     input.auditEvents.push({
       type: "resource_snapshot_created",
       message: `Created resource snapshot ${snapshot.id}`,
@@ -314,7 +422,6 @@ async function searchResourceSnapshot(input: {
       });
     }
   }
-  return discovery.snapshot;
 }
 
 function isSearchErrorOutput(output: unknown): output is { keyword: string; error: string } {
@@ -328,118 +435,31 @@ function isSearchErrorOutput(output: unknown): output is { keyword: string; erro
   );
 }
 
-async function matchSnapshotCandidates(input: {
-  title: MediaTitle;
-  snapshot: ResourceSnapshot;
-  agents: AgentNodes;
-  auditEvents: AuditEvent[];
-}): Promise<ResourceCandidate[]> {
-  const decision = await input.agents.matchCandidates({
-    snapshotId: input.snapshot.id,
-    title: input.title.title,
-    aliases: input.title.aliases,
-    candidates: input.snapshot.candidates,
-  });
-  assertCandidateMatchUsesSnapshot(decision, input.snapshot.candidates, input.snapshot.id);
-  input.auditEvents.push({
-    type: "candidate_match_decision_created",
-    message: `Created candidate match decision ${decision.node}`,
-    data: {
-      snapshotId: decision.snapshotId,
-      matchedCandidateIds: decision.matchedCandidateIds,
-      rejectedCandidateIds: decision.rejectedCandidateIds,
-      uncertainCandidateIds: decision.uncertainCandidateIds,
-      confidence: decision.confidence,
-      reason: decision.reason,
-    },
-  });
+function resolveAcquisitionStatus(input: {
+  missingBefore: string[];
+  stillMissingAfter: string[];
+}): WorkflowStatus {
+  if (input.stillMissingAfter.length === 0) {
+    return "succeeded";
+  }
+  if (input.stillMissingAfter.length < input.missingBefore.length) {
+    return "partial";
+  }
+  return "no_coverage";
+}
 
-  const matchedIds = new Set(decision.matchedCandidateIds);
-  return input.snapshot.candidates.filter((candidate) => matchedIds.has(candidate.id));
+function actionableMissingEpisodes(episodes: EpisodeState[]): string[] {
+  return episodes
+    .filter((episode) => episode.airStatus === "aired" && !episode.obtained)
+    .map((episode) => episode.episodeCode);
+}
+
+function obtainedEpisodeCodes(episodes: EpisodeState[]): string[] {
+  return episodes.filter((episode) => episode.obtained).map((episode) => episode.episodeCode);
 }
 
 function collectProviderAheadEpisodes(episodes: EpisodeState[]): string[] {
   return episodes
     .filter((episode) => episode.obtained && episode.metadataStatus === "provider_ahead")
     .map((episode) => episode.episodeCode);
-}
-
-function requireCandidate(candidates: ResourceCandidate[], candidateId: string): ResourceCandidate {
-  const candidate = candidates.find((item) => item.id === candidateId);
-  if (!candidate) {
-    throw new Error(`Candidate ${candidateId} was not found in the current resource snapshot`);
-  }
-  return candidate;
-}
-
-function assertDecisionUsesSnapshot(
-  decision: AgentDecision,
-  candidates: { id: string; snapshotId: string }[],
-  snapshotId: string,
-): void {
-  if (decision.snapshotId !== snapshotId) {
-    throw new Error("Agent decision referenced a different resource snapshot");
-  }
-
-  const candidatesFromOtherSnapshots = candidates.filter((candidate) => candidate.snapshotId !== snapshotId);
-  if (candidatesFromOtherSnapshots.length > 0) {
-    throw new Error("Resource snapshot contained candidates from another snapshot");
-  }
-
-  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
-  const decisionCandidateIds = [
-    ...decision.selectedCandidateIds,
-    ...decision.rejectedCandidateIds,
-    ...Object.keys(decision.episodeMapping),
-    ...Object.keys(decision.providerAheadEpisodeMapping),
-  ];
-  const unknownCandidateIds = decisionCandidateIds.filter((candidateId) => !candidateIds.has(candidateId));
-  if (unknownCandidateIds.length > 0) {
-    throw new Error(`Agent decision referenced candidates outside the current resource snapshot: ${unknownCandidateIds.join(", ")}`);
-  }
-}
-
-function assertCandidateMatchUsesSnapshot(
-  decision: CandidateMatchDecision,
-  candidates: { id: string; snapshotId: string }[],
-  snapshotId: string,
-): void {
-  if (decision.snapshotId !== snapshotId) {
-    throw new Error("Candidate match decision referenced a different resource snapshot");
-  }
-
-  const candidatesFromOtherSnapshots = candidates.filter((candidate) => candidate.snapshotId !== snapshotId);
-  if (candidatesFromOtherSnapshots.length > 0) {
-    throw new Error("Resource snapshot contained candidates from another snapshot");
-  }
-
-  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
-  const decisionCandidateIds = [
-    ...decision.matchedCandidateIds,
-    ...decision.rejectedCandidateIds,
-    ...decision.uncertainCandidateIds,
-  ];
-  const unknownCandidateIds = decisionCandidateIds.filter((candidateId) => !candidateIds.has(candidateId));
-  if (unknownCandidateIds.length > 0) {
-    throw new Error(
-      `Candidate match decision referenced candidates outside the current resource snapshot: ${unknownCandidateIds.join(", ")}`,
-    );
-  }
-
-  const bucketsByCandidateId = new Map<string, string[]>();
-  for (const [bucket, ids] of [
-    ["matched", decision.matchedCandidateIds],
-    ["rejected", decision.rejectedCandidateIds],
-    ["uncertain", decision.uncertainCandidateIds],
-  ] as const) {
-    for (const id of ids) {
-      bucketsByCandidateId.set(id, [...(bucketsByCandidateId.get(id) ?? []), bucket]);
-    }
-  }
-  const duplicatedCandidates = Array.from(bucketsByCandidateId.entries())
-    .filter(([, buckets]) => buckets.length > 1)
-    .map(([candidateId]) => candidateId);
-  if (duplicatedCandidates.length > 0) {
-    throw new Error(`Candidate match decision put candidates in multiple buckets: ${duplicatedCandidates.join(", ")}`);
-  }
 }

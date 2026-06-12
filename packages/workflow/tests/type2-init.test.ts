@@ -4,6 +4,8 @@ import {
   FakeResourceProvider,
   FakeStorageExecutor,
   runType2Initialization,
+  type AcquisitionPlanningInput,
+  type AcquisitionPlanningResult,
   type MediaTitle,
   type ResourceCandidate,
   type StorageExecutor,
@@ -171,7 +173,7 @@ describe("runType2Initialization", () => {
     });
   });
 
-  it("uses the keyword agent to recover from an empty or failed initial search keyword", async () => {
+  it("recovers from a failed initial keyword through the planning agent's alternates", async () => {
     const title: MediaTitle = {
       id: "title_show",
       tmdbId: 1,
@@ -197,7 +199,7 @@ describe("runType2Initialization", () => {
         "Show 4K": "PanSou rejected the initial keyword",
       },
       keywordResults: {
-        "The Show S01": [
+        "The Show": [
           {
             title: "The Show S01E01 4K",
             episodeHints: ["S01E01"],
@@ -213,14 +215,18 @@ describe("runType2Initialization", () => {
       keyword: "Show 4K",
       resourceProvider,
       storage: new FakeStorageExecutor({ directories: { dir_show_s1: [] } }),
-      agents: new KeywordRecoveringAgentNodes(),
+      agents: new FakeAgentNodes(),
     });
 
-    expect(result.resourceSnapshots[0]?.keyword).toBe("The Show S01");
+    const selectedSnapshot = result.resourceSnapshots.find(
+      (snapshot) => snapshot.id === result.decisions[0]?.snapshotId,
+    );
+    expect(selectedSnapshot?.keyword).toBe("The Show");
     expect(result.auditEvents.map((event) => event.type)).toContain("keyword_search_failed");
+    expect(result.auditEvents.map((event) => event.type)).toContain("acquisition_plan_created");
   });
 
-  it("filters resource candidates through the candidate-match agent before episode coverage selection", async () => {
+  it("transfers only candidates the planning agent judged as the right target", async () => {
     const title: MediaTitle = {
       id: "title_show",
       tmdbId: 1,
@@ -264,11 +270,17 @@ describe("runType2Initialization", () => {
         },
       }),
       storage,
-      agents: new CandidateMatchFilteringAgentNodes(),
+      agents: new TargetFilteringAgentNodes(),
       workflowRunId: "run_candidate_match",
     });
 
-    expect(storage.transfers.map((transfer) => transfer.candidate.id)).toEqual(["snapshot_1_candidate_2"]);
+    expect(storage.transfers.map((transfer) => transfer.candidate.id)).toEqual([
+      "snapshot_1_candidate_2",
+      "snapshot_2_candidate_2",
+    ]);
+    expect(storage.transfers.map((transfer) => transfer.candidate.title)).not.toContain(
+      "Different Show S01E01 4K",
+    );
   });
 
   it("passes the selected resource candidate payload to storage transfer", async () => {
@@ -370,29 +382,34 @@ class RecordingCandidateStorage implements StorageExecutor {
   }
 }
 
-class KeywordRecoveringAgentNodes extends FakeAgentNodes {
-  async generateKeywords() {
+class TargetFilteringAgentNodes extends FakeAgentNodes {
+  override async planAcquisition(input: AcquisitionPlanningInput): Promise<AcquisitionPlanningResult> {
+    const snapshot = await input.searchResources({ keyword: input.initialKeyword });
     return {
-      keywords: ["The Show S01"],
-      reason: "Use the alias and season when the initial keyword fails.",
-    };
-  }
-}
-
-class CandidateMatchFilteringAgentNodes extends FakeAgentNodes {
-  async matchCandidates(input: { snapshotId: string; candidates: ResourceCandidate[] }) {
-    return {
-      node: "test_candidate_match",
-      snapshotId: input.snapshotId,
-      matchedCandidateIds: input.candidates
-        .filter((candidate) => candidate.title === "Show S01E01 4K")
-        .map((candidate) => candidate.id),
-      rejectedCandidateIds: input.candidates
-        .filter((candidate) => candidate.title !== "Show S01E01 4K")
-        .map((candidate) => candidate.id),
-      uncertainCandidateIds: [],
-      confidence: "high" as const,
-      reason: "Only the exact target title should reach coverage selection.",
+      plan: {
+        node: "target_filtering",
+        selectedSnapshotId: snapshot.id,
+        searchedKeywords: [input.initialKeyword],
+        candidateDispositions: snapshot.candidates.map((candidate) =>
+          candidate.title === "Show S01E01 4K"
+            ? {
+                candidateId: candidate.id,
+                disposition: "selected" as const,
+                episodes: [...candidate.episodeHints],
+                reason: "Exact target title.",
+              }
+            : {
+                candidateId: candidate.id,
+                disposition: "rejected" as const,
+                episodes: [],
+                reason: "Wrong target title.",
+              },
+        ),
+        confidence: "high",
+        reason: "Only the exact target title should be transferred.",
+      },
+      snapshots: [snapshot],
+      trace: [],
     };
   }
 }

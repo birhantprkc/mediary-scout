@@ -66,7 +66,7 @@ describe("requestTrackingFromTmdbSelection", () => {
       request: {
         status: "completed",
         workflowRunId: "run_qiaochu_init",
-        workflowStatus: "succeeded",
+        workflowStatus: "partial",
         progress: {
           totalEpisodes: 24,
           latestAiredEpisode: 14,

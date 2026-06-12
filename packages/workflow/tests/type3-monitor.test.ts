@@ -6,10 +6,9 @@ import {
   FakeStorageExecutor,
   reconcileVerifiedFiles,
   runType3Monitoring,
-  type AgentDecision,
+  type AcquisitionPlanningInput,
+  type AcquisitionPlanningResult,
   type MediaTitle,
-  type PackageRecognitionDecision,
-  type ResourceCandidate,
   type TrackedSeason,
   type VerifiedFile,
 } from "../src/index.js";
@@ -38,20 +37,24 @@ function qiaochuFixture() {
   return { title, season };
 }
 
+function obtainedFiles(count: number, storageDirectoryId: string): VerifiedFile[] {
+  return Array.from({ length: count }, (_, index) => {
+    const episode = `S01E${String(index + 1).padStart(2, "0")}`;
+    return {
+      id: `file_${episode}`,
+      storageDirectoryId,
+      name: `翘楚.${episode}.mkv`,
+      sizeBytes: 1_000_000_000,
+      episodeCode: episode,
+      providerFileId: `provider_${episode}`,
+    };
+  });
+}
+
 describe("runType3Monitoring", () => {
-  it("repairs externally deleted episodes when the agent selects fallback resources", async () => {
+  it("repairs deletion via a failure-evidence re-planning pass, never mechanical fallback", async () => {
     const { title, season } = qiaochuFixture();
-    const existingFiles: VerifiedFile[] = Array.from({ length: 12 }, (_, index) => {
-      const episode = `S01E${String(index + 1).padStart(2, "0")}`;
-      return {
-        id: `file_${episode}`,
-        storageDirectoryId: season.storageDirectoryId,
-        name: `翘楚.${episode}.mkv`,
-        sizeBytes: 1_000_000_000,
-        episodeCode: episode,
-        providerFileId: `provider_${episode}`,
-      };
-    });
+    const existingFiles = obtainedFiles(12, season.storageDirectoryId);
     const initialEpisodes = reconcileVerifiedFiles({
       season,
       episodes: createEpisodeStates({
@@ -88,20 +91,6 @@ describe("runType3Monitoring", () => {
           providerMessage: "already transferred elsewhere",
           files: [],
         },
-        snapshot_1_candidate_2: {
-          status: "succeeded",
-          providerMessage: "",
-          files: [
-            {
-              id: "restored_13",
-              storageDirectoryId: season.storageDirectoryId,
-              name: "翘楚.S01E13.restored.mkv",
-              sizeBytes: 5_000_000_000,
-              episodeCode: "S01E13",
-              providerFileId: "restored_provider_13",
-            },
-          ],
-        },
         snapshot_1_candidate_3: {
           status: "succeeded",
           providerMessage: "",
@@ -113,6 +102,20 @@ describe("runType3Monitoring", () => {
               sizeBytes: 5_000_000_000,
               episodeCode: "S01E14",
               providerFileId: "restored_provider_14",
+            },
+          ],
+        },
+        snapshot_2_candidate_2: {
+          status: "succeeded",
+          providerMessage: "",
+          files: [
+            {
+              id: "restored_13",
+              storageDirectoryId: season.storageDirectoryId,
+              name: "翘楚.S01E13.restored.mkv",
+              sizeBytes: 5_000_000_000,
+              episodeCode: "S01E13",
+              providerFileId: "restored_provider_13",
             },
           ],
         },
@@ -135,7 +138,7 @@ describe("runType3Monitoring", () => {
       keyword: "翘楚 4K",
       resourceProvider,
       storage,
-      agents: new AgentSelectedFallbackNodes(),
+      agents: new FakeAgentNodes(),
     });
 
     expect(result.status).toBe("succeeded");
@@ -144,32 +147,30 @@ describe("runType3Monitoring", () => {
       "succeeded",
       "succeeded",
     ]);
+    expect(result.transferAttempts.map((attempt) => attempt.candidateId)).toEqual([
+      "snapshot_1_candidate_1",
+      "snapshot_1_candidate_3",
+      "snapshot_2_candidate_2",
+    ]);
+    expect(result.decisions).toHaveLength(2);
+    expect(result.resourceSnapshots.map((snapshot) => snapshot.id)).toEqual(["snapshot_1", "snapshot_2"]);
     expect(result.obtainedEpisodes).toContain("S01E13");
     expect(result.obtainedEpisodes).toContain("S01E14");
     expect(result.notification.body).toContain("2 episodes restored");
     expect(result.notifications).toEqual([result.notification]);
+    expect(result.auditEvents.map((event) => event.type)).toContain("acquisition_pass_incomplete");
   });
 
-  it("does not mechanically transfer candidates rejected by the agent", async () => {
+  it("never mechanically transfers candidates the agent did not select", async () => {
     const { title, season } = qiaochuFixture();
-    const existingFiles: VerifiedFile[] = Array.from({ length: 12 }, (_, index) => {
-      const episode = `S01E${String(index + 1).padStart(2, "0")}`;
-      return {
-        id: `file_${episode}`,
-        storageDirectoryId: season.storageDirectoryId,
-        name: `翘楚.${episode}.mkv`,
-        sizeBytes: 1_000_000_000,
-        episodeCode: episode,
-        providerFileId: `provider_${episode}`,
-      };
-    });
+    const existingFiles = obtainedFiles(12, season.storageDirectoryId);
     const initialEpisodes = reconcileVerifiedFiles({
-      season,
+      season: { ...season, latestAiredEpisode: 13 },
       episodes: createEpisodeStates({
         trackedSeasonId: season.id,
         seasonNumber: season.seasonNumber,
         totalEpisodes: season.totalEpisodes,
-        latestAiredEpisode: season.latestAiredEpisode,
+        latestAiredEpisode: 13,
       }),
       files: existingFiles,
     });
@@ -183,7 +184,7 @@ describe("runType3Monitoring", () => {
         },
         snapshot_1_candidate_2: {
           status: "succeeded",
-          providerMessage: "",
+          providerMessage: "must never be transferred without agent selection",
           files: [
             {
               id: "restored_13",
@@ -208,24 +209,22 @@ describe("runType3Monitoring", () => {
 
     const result = await runType3Monitoring({
       title,
-      season,
+      season: { ...season, latestAiredEpisode: 13 },
       episodes: initialEpisodes,
       keyword: "翘楚 4K",
       resourceProvider,
       storage,
-      agents: new PrimaryOnlyAgentNodes(),
+      agents: new PrimaryThenNoCoverageAgentNodes(),
     });
 
-    expect(result.transferAttempts.map((attempt) => attempt.candidateId)).toEqual([
-      "snapshot_1_candidate_1",
-    ]);
+    expect(result.transferAttempts.map((attempt) => attempt.candidateId)).toEqual(["snapshot_1_candidate_1"]);
     expect(result.transferAttempts.map((attempt) => attempt.status)).toEqual(["no_target_change"]);
     expect(result.obtainedEpisodes).not.toContain("S01E13");
+    expect(result.status).toBe("no_coverage");
   });
 
-  it("rejects agent decisions that reference candidates outside the current snapshot", async () => {
+  it("rejects plans whose selected snapshot was not observed in this run", async () => {
     const { title, season } = qiaochuFixture();
-    const existingFiles: VerifiedFile[] = [];
     const initialEpisodes = createEpisodeStates({
       trackedSeasonId: season.id,
       seasonNumber: season.seasonNumber,
@@ -233,7 +232,7 @@ describe("runType3Monitoring", () => {
       latestAiredEpisode: 1,
     });
     const storage = new FakeStorageExecutor({
-      directories: { [season.storageDirectoryId]: existingFiles },
+      directories: { [season.storageDirectoryId]: [] },
       transferOutcomes: {
         snapshot_99_candidate_1: {
           status: "succeeded",
@@ -267,12 +266,12 @@ describe("runType3Monitoring", () => {
         storage,
         agents: new StaleSnapshotAgentNodes(),
       }),
-    ).rejects.toThrow("Agent decision referenced a different resource snapshot");
+    ).rejects.toThrow(/not observed in this run/);
 
     await expect(storage.listVideoFiles(season.storageDirectoryId)).resolves.toEqual([]);
   });
 
-  it("rejects stale candidate ids hidden in agent decision mappings", async () => {
+  it("rejects plans that silently omit candidates from the selected snapshot", async () => {
     const { title, season } = qiaochuFixture();
     const initialEpisodes = createEpisodeStates({
       trackedSeasonId: season.id,
@@ -285,7 +284,7 @@ describe("runType3Monitoring", () => {
       transferOutcomes: {
         snapshot_1_candidate_1: {
           status: "succeeded",
-          providerMessage: "current candidate should not transfer after invalid mapping",
+          providerMessage: "current candidate should not transfer after invalid plan",
           files: [
             {
               id: "file_01",
@@ -301,7 +300,10 @@ describe("runType3Monitoring", () => {
     });
     const resourceProvider = new FakeResourceProvider({
       keywordResults: {
-        "翘楚 4K": [{ title: "翘楚 S01E01 current", episodeHints: ["S01E01"] }],
+        "翘楚 4K": [
+          { title: "翘楚 S01E01 current", episodeHints: ["S01E01"] },
+          { title: "翘楚 S01E01 ignored", episodeHints: ["S01E01"] },
+        ],
       },
     });
 
@@ -313,9 +315,9 @@ describe("runType3Monitoring", () => {
         keyword: "翘楚 4K",
         resourceProvider,
         storage,
-        agents: new StaleMappingAgentNodes(),
+        agents: new OmittingDispositionAgentNodes(),
       }),
-    ).rejects.toThrow("Agent decision referenced candidates outside the current resource snapshot");
+    ).rejects.toThrow(/every candidate/);
 
     await expect(storage.listVideoFiles(season.storageDirectoryId)).resolves.toEqual([]);
   });
@@ -381,17 +383,7 @@ describe("runType3Monitoring", () => {
 
   it("marks an episode obtained without searching when the target directory already has it", async () => {
     const { title, season } = qiaochuFixture();
-    const currentFiles: VerifiedFile[] = Array.from({ length: 13 }, (_, index) => {
-      const episode = `S01E${String(index + 1).padStart(2, "0")}`;
-      return {
-        id: `file_${episode}`,
-        storageDirectoryId: season.storageDirectoryId,
-        name: `翘楚.${episode}.mkv`,
-        sizeBytes: 1_000_000_000,
-        episodeCode: episode,
-        providerFileId: `provider_${episode}`,
-      };
-    });
+    const currentFiles = obtainedFiles(13, season.storageDirectoryId);
     const initialEpisodes = reconcileVerifiedFiles({
       season: { ...season, latestAiredEpisode: 13 },
       episodes: createEpisodeStates({
@@ -426,209 +418,149 @@ describe("runType3Monitoring", () => {
       obtained: true,
     });
   });
+
+  it("returns no_coverage with an honest notification when nothing covers the gap", async () => {
+    const { title, season } = qiaochuFixture();
+    const existingFiles = obtainedFiles(12, season.storageDirectoryId);
+    const initialEpisodes = reconcileVerifiedFiles({
+      season: { ...season, latestAiredEpisode: 13 },
+      episodes: createEpisodeStates({
+        trackedSeasonId: season.id,
+        seasonNumber: season.seasonNumber,
+        totalEpisodes: season.totalEpisodes,
+        latestAiredEpisode: 13,
+      }),
+      files: existingFiles,
+    });
+    const storage = new FakeStorageExecutor({
+      directories: { [season.storageDirectoryId]: existingFiles },
+    });
+    const resourceProvider = new FakeResourceProvider({
+      keywordResults: {
+        "翘楚 4K": [{ title: "无关动画 S01E01", episodeHints: ["S01E01"] }],
+      },
+    });
+
+    const result = await runType3Monitoring({
+      title,
+      season: { ...season, latestAiredEpisode: 13 },
+      episodes: initialEpisodes,
+      keyword: "翘楚 4K",
+      resourceProvider,
+      storage,
+      agents: new FakeAgentNodes(),
+    });
+
+    expect(result.status).toBe("no_coverage");
+    expect(result.transferAttempts).toEqual([]);
+    expect(result.notification.kind).toBe("no_coverage");
+    expect(result.notification.body).toContain("no covering resource found yet");
+    expect(result.auditEvents.map((event) => event.type)).toContain("acquisition_no_coverage");
+  });
 });
 
-class AgentSelectedFallbackNodes extends FakeAgentNodes {
-  async generateKeywords(): Promise<{ keywords: string[]; reason: string }> {
-    return {
-      keywords: [],
-      reason: "not used",
-    };
-  }
-
-  async matchCandidates(input: {
-    snapshotId: string;
-    title: string;
-    aliases: string[];
-    candidates: ResourceCandidate[];
-  }) {
-    return matchAllCandidates(input.snapshotId, input.candidates);
-  }
-
-  async selectEpisodeCoverage(input: {
-    snapshotId: string;
-    candidates: ResourceCandidate[];
-    missingEpisodes: string[];
-    latestAiredEpisode: number;
-  }): Promise<AgentDecision> {
-    const selectedCandidates = input.candidates.filter((candidate) =>
-      candidate.episodeHints.some((episodeCode) => input.missingEpisodes.includes(episodeCode)),
-    );
-
-    return {
-      node: "agent_selected_fallback",
-      snapshotId: input.snapshotId,
-      selectedCandidateIds: selectedCandidates.map((candidate) => candidate.id),
-      episodeMapping: Object.fromEntries(
-        selectedCandidates.map((candidate) => [
-          candidate.id,
-          candidate.episodeHints.filter((episodeCode) => input.missingEpisodes.includes(episodeCode)),
-        ]),
-      ),
-      providerAheadEpisodeMapping: {},
-      rejectedCandidateIds: input.candidates
-        .filter((candidate) => !selectedCandidates.some((selected) => selected.id === candidate.id))
-        .map((candidate) => candidate.id),
-      confidence: "medium",
-      reason: `Selected fallback resources with latest aired ${input.latestAiredEpisode}`,
-    };
-  }
-
-  async recognizePackage(): Promise<PackageRecognitionDecision> {
-    return lowConfidencePackageRecognition();
-  }
-}
-
-class PrimaryOnlyAgentNodes extends FakeAgentNodes {
-  async generateKeywords(): Promise<{ keywords: string[]; reason: string }> {
-    return {
-      keywords: [],
-      reason: "not used",
-    };
-  }
-
-  async matchCandidates(input: {
-    snapshotId: string;
-    title: string;
-    aliases: string[];
-    candidates: ResourceCandidate[];
-  }) {
-    return matchAllCandidates(input.snapshotId, input.candidates);
-  }
-
-  async selectEpisodeCoverage(input: {
-    snapshotId: string;
-    candidates: ResourceCandidate[];
-    missingEpisodes: string[];
-    latestAiredEpisode: number;
-  }): Promise<AgentDecision> {
-    const primary = input.candidates[0];
-    if (!primary) {
-      throw new Error("Expected at least one primary candidate");
+class PrimaryThenNoCoverageAgentNodes extends FakeAgentNodes {
+  override async planAcquisition(input: AcquisitionPlanningInput): Promise<AcquisitionPlanningResult> {
+    const snapshot = await input.searchResources({ keyword: input.initialKeyword });
+    if (input.failureEvidence.length > 0) {
+      return {
+        plan: {
+          node: "primary_then_no_coverage",
+          selectedSnapshotId: null,
+          searchedKeywords: [input.initialKeyword],
+          candidateDispositions: snapshot.candidates.map((candidate) => ({
+            candidateId: candidate.id,
+            disposition: "rejected" as const,
+            episodes: [],
+            reason: "Agent judged remaining candidates as wrong targets.",
+          })),
+          confidence: "low",
+          reason: "No trustworthy candidate remains after failure evidence.",
+        },
+        snapshots: [snapshot],
+        trace: [],
+      };
     }
-
+    const [primary, ...rest] = snapshot.candidates;
+    if (!primary) {
+      throw new Error("Expected at least one candidate");
+    }
     return {
-      node: "primary_only",
-      snapshotId: input.snapshotId,
-      selectedCandidateIds: [primary.id],
-      episodeMapping: {
-        [primary.id]: primary.episodeHints.filter((episodeCode) => input.missingEpisodes.includes(episodeCode)),
+      plan: {
+        node: "primary_then_no_coverage",
+        selectedSnapshotId: snapshot.id,
+        searchedKeywords: [input.initialKeyword],
+        candidateDispositions: [
+          {
+            candidateId: primary.id,
+            disposition: "selected" as const,
+            episodes: [...primary.episodeHints],
+            reason: "Primary covers the missing episode.",
+          },
+          ...rest.map((candidate) => ({
+            candidateId: candidate.id,
+            disposition: "rejected" as const,
+            episodes: [],
+            reason: "Agent judged this candidate as a wrong target.",
+          })),
+        ],
+        confidence: "medium",
+        reason: "Selected only the trustworthy primary resource.",
       },
-      providerAheadEpisodeMapping: {},
-      rejectedCandidateIds: input.candidates.slice(1).map((candidate) => candidate.id),
-      confidence: "medium",
-      reason: `Selected only primary with latest aired ${input.latestAiredEpisode}`,
+      snapshots: [snapshot],
+      trace: [],
     };
-  }
-
-  async recognizePackage(): Promise<PackageRecognitionDecision> {
-    return lowConfidencePackageRecognition();
   }
 }
 
 class StaleSnapshotAgentNodes extends FakeAgentNodes {
-  async generateKeywords(): Promise<{ keywords: string[]; reason: string }> {
+  override async planAcquisition(input: AcquisitionPlanningInput): Promise<AcquisitionPlanningResult> {
+    const snapshot = await input.searchResources({ keyword: input.initialKeyword });
     return {
-      keywords: [],
-      reason: "not used",
-    };
-  }
-
-  async matchCandidates(input: {
-    snapshotId: string;
-    title: string;
-    aliases: string[];
-    candidates: ResourceCandidate[];
-  }) {
-    return matchAllCandidates(input.snapshotId, input.candidates);
-  }
-
-  async selectEpisodeCoverage(): Promise<AgentDecision> {
-    return {
-      node: "stale_snapshot",
-      snapshotId: "snapshot_99",
-      selectedCandidateIds: ["snapshot_99_candidate_1"],
-      episodeMapping: {
-        snapshot_99_candidate_1: ["S01E01"],
+      plan: {
+        node: "stale_snapshot",
+        selectedSnapshotId: "snapshot_99",
+        searchedKeywords: [input.initialKeyword],
+        candidateDispositions: snapshot.candidates.map((candidate) => ({
+          candidateId: candidate.id,
+          disposition: "rejected" as const,
+          episodes: [],
+          reason: "stale decision from a previous search",
+        })),
+        confidence: "high",
+        reason: "stale decision from a previous search",
       },
-      providerAheadEpisodeMapping: {},
-      rejectedCandidateIds: [],
-      confidence: "high",
-      reason: "stale decision from a previous search",
+      snapshots: [snapshot],
+      trace: [],
     };
-  }
-
-  async recognizePackage(): Promise<PackageRecognitionDecision> {
-    return lowConfidencePackageRecognition();
   }
 }
 
-class StaleMappingAgentNodes extends FakeAgentNodes {
-  async generateKeywords(): Promise<{ keywords: string[]; reason: string }> {
-    return {
-      keywords: [],
-      reason: "not used",
-    };
-  }
-
-  async matchCandidates(input: {
-    snapshotId: string;
-    title: string;
-    aliases: string[];
-    candidates: ResourceCandidate[];
-  }) {
-    return matchAllCandidates(input.snapshotId, input.candidates);
-  }
-
-  async selectEpisodeCoverage(input: {
-    snapshotId: string;
-    candidates: ResourceCandidate[];
-  }): Promise<AgentDecision> {
-    const current = input.candidates[0];
-    if (!current) {
-      throw new Error("Expected at least one current candidate");
+class OmittingDispositionAgentNodes extends FakeAgentNodes {
+  override async planAcquisition(input: AcquisitionPlanningInput): Promise<AcquisitionPlanningResult> {
+    const snapshot = await input.searchResources({ keyword: input.initialKeyword });
+    const first = snapshot.candidates[0];
+    if (!first) {
+      throw new Error("Expected at least one candidate");
     }
-
     return {
-      node: "stale_mapping",
-      snapshotId: input.snapshotId,
-      selectedCandidateIds: [current.id],
-      episodeMapping: {
-        [current.id]: ["S01E01"],
-        snapshot_99_candidate_1: ["S01E01"],
+      plan: {
+        node: "omitting_disposition",
+        selectedSnapshotId: snapshot.id,
+        searchedKeywords: [input.initialKeyword],
+        candidateDispositions: [
+          {
+            candidateId: first.id,
+            disposition: "selected" as const,
+            episodes: [...first.episodeHints],
+            reason: "Only judged the first candidate and ignored the rest.",
+          },
+        ],
+        confidence: "high",
+        reason: "Truncated judgment.",
       },
-      providerAheadEpisodeMapping: {
-        snapshot_99_candidate_1: ["S01E99"],
-      },
-      rejectedCandidateIds: ["snapshot_99_candidate_2"],
-      confidence: "high",
-      reason: "selected current candidate but leaked stale ids in mappings",
+      snapshots: [snapshot],
+      trace: [],
     };
   }
-
-  async recognizePackage(): Promise<PackageRecognitionDecision> {
-    return lowConfidencePackageRecognition();
-  }
-}
-
-function lowConfidencePackageRecognition(): PackageRecognitionDecision {
-  return {
-    node: "type3_test_stub_package_recognition",
-    fileMappings: [],
-    rejectedProviderFileIds: [],
-    confidence: "low",
-    reason: "Package recognition is not used by these Type3 tests.",
-  };
-}
-
-function matchAllCandidates(snapshotId: string, candidates: ResourceCandidate[]) {
-  return {
-    node: "type3_test_candidate_match",
-    snapshotId,
-    matchedCandidateIds: candidates.map((candidate) => candidate.id),
-    rejectedCandidateIds: [],
-    uncertainCandidateIds: [],
-    confidence: candidates.length > 0 ? ("high" as const) : ("low" as const),
-    reason: "Type3 tests focus episode coverage behavior after target-resource matching.",
-  };
 }
