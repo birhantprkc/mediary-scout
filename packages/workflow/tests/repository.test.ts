@@ -182,6 +182,83 @@ describe("InMemoryWorkflowRepository", () => {
     await expect(repository.listEpisodeStates("missing_season")).resolves.toEqual([]);
   });
 
+  it("lists tracked season states and claims the oldest queued workflow run", async () => {
+    const repository = new InMemoryWorkflowRepository();
+    const queuedOld = workflowPersistenceFixture({
+      workflowRun: {
+        ...workflowPersistenceFixture().workflowRun,
+        id: "run_queued_old",
+        status: "queued",
+        startedAt: "2026-06-11T00:00:00.000Z",
+        finishedAt: null,
+      },
+      resourceSnapshots: [],
+      decisions: [],
+      transferAttempts: [],
+      notifications: [],
+    });
+    const queuedNew = workflowPersistenceFixture({
+      title: {
+        ...workflowPersistenceFixture().title,
+        id: "title_2",
+        title: "Other Show",
+      },
+      season: {
+        ...workflowPersistenceFixture().season,
+        id: "season_2",
+        mediaTitleId: "title_2",
+      },
+      workflowRun: {
+        ...workflowPersistenceFixture().workflowRun,
+        id: "run_queued_new",
+        status: "queued",
+        trackedSeasonId: "season_2",
+        startedAt: "2026-06-11T00:01:00.000Z",
+        finishedAt: null,
+      },
+      episodes: workflowPersistenceFixture().episodes.map((episode) => ({
+        ...episode,
+        trackedSeasonId: "season_2",
+      })),
+      resourceSnapshots: [],
+      decisions: [],
+      transferAttempts: [],
+      notifications: [],
+    });
+    await repository.saveWorkflowRunSnapshot(queuedNew);
+    await repository.saveWorkflowRunSnapshot(queuedOld);
+
+    await expect(repository.listTrackedSeasonStates()).resolves.toMatchObject([
+      {
+        season: { id: "season_2" },
+      },
+      {
+        season: { id: "season_1" },
+      },
+    ]);
+
+    const claimed = await repository.claimNextQueuedWorkflowRun({
+      kind: "type2_init",
+      now: "2026-06-11T00:02:00.000Z",
+    });
+
+    expect(claimed).toMatchObject({
+      workflowRun: {
+        id: "run_queued_old",
+        status: "running",
+        auditEvents: [
+          { type: "resource_snapshot_created" },
+          { type: "workflow_claimed" },
+        ],
+      },
+    });
+    await expect(repository.getWorkflowRunSnapshot("run_queued_old")).resolves.toMatchObject({
+      workflowRun: {
+        status: "running",
+      },
+    });
+  });
+
   it("finds the latest active workflow run for a tracked season and kind", async () => {
     const repository = new InMemoryWorkflowRepository();
     const succeeded = workflowPersistenceFixture({

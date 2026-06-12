@@ -6,6 +6,7 @@ import {
   type MediaTitle,
   type TrackedSeason,
   type TrackedSeasonStatusView,
+  type WorkflowRepository,
   type WorkflowRun,
 } from "@media-track/workflow";
 
@@ -18,7 +19,27 @@ export interface DashboardState {
 }
 
 export async function getDashboardState(): Promise<DashboardState> {
+  const repository = await createDemoWorkflowRepository();
+  const { season } = qiaochuFixture();
+
+  const trackedSeason = await getTrackedSeasonStatusView({
+    repository,
+    trackedSeasonId: season.id,
+  });
+  if (!trackedSeason) {
+    throw new Error("Demo tracked season was not created");
+  }
+
+  return dashboardStateFromTrackedSeason(trackedSeason);
+}
+
+export async function createDemoWorkflowRepository(): Promise<InMemoryWorkflowRepository> {
   const repository = new InMemoryWorkflowRepository();
+  await seedDemoWorkflowRepository(repository);
+  return repository;
+}
+
+export async function seedDemoWorkflowRepository(repository: WorkflowRepository): Promise<void> {
   const { title, season } = qiaochuFixture();
   const episodes = seedEpisodes(season);
   await repository.saveWorkflowRunSnapshot({
@@ -31,15 +52,9 @@ export async function getDashboardState(): Promise<DashboardState> {
     transferAttempts: [],
     notifications: [],
   });
+}
 
-  const trackedSeason = await getTrackedSeasonStatusView({
-    repository,
-    trackedSeasonId: season.id,
-  });
-  if (!trackedSeason) {
-    throw new Error("Demo tracked season was not created");
-  }
-
+export function dashboardStateFromTrackedSeason(trackedSeason: TrackedSeasonStatusView): DashboardState {
   return {
     trackedSeason,
     events: [

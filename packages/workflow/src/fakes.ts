@@ -1,12 +1,16 @@
 import {
-  episodeNumberFromCode,
   type AgentDecision,
+  type CandidateMatchDecision,
   type ResourceCandidate,
   type ResourceSnapshot,
   type TransferAttempt,
   type TransferStatus,
   type VerifiedFile,
 } from "./domain.js";
+import type {
+  PackageRecognitionDecision,
+  PackageRecognitionInput,
+} from "./package-normalizer.js";
 import type { AgentNodes, ResourceProvider, StorageExecutor } from "./ports.js";
 
 const FIXED_CREATED_AT = "2026-01-01T00:00:00.000Z";
@@ -23,6 +27,10 @@ export interface TransferOutcome {
   status: TransferStatus;
   providerMessage: string;
   files: VerifiedFile[];
+}
+
+export interface FakeAgentNodesOptions {
+  packageRecognition?: PackageRecognitionDecision;
 }
 
 export class FakeResourceProvider implements ResourceProvider {
@@ -163,6 +171,12 @@ export class FakeStorageExecutor implements StorageExecutor {
 }
 
 export class FakeAgentNodes implements AgentNodes {
+  private readonly packageRecognition: PackageRecognitionDecision | undefined;
+
+  constructor(options: FakeAgentNodesOptions = {}) {
+    this.packageRecognition = options.packageRecognition;
+  }
+
   async generateKeywords(input: {
     title: string;
     aliases: string[];
@@ -175,6 +189,24 @@ export class FakeAgentNodes implements AgentNodes {
         input.previousErrors.length > 0
           ? "Generated keywords after prior fake errors."
           : "Generated baseline fake keywords.",
+    };
+  }
+
+  async matchCandidates(input: {
+    snapshotId: string;
+    title: string;
+    aliases: string[];
+    candidates: ResourceCandidate[];
+  }): Promise<CandidateMatchDecision> {
+    const matchedCandidateIds = input.candidates.map((candidate) => candidate.id);
+    return {
+      node: "fake_candidate_match",
+      snapshotId: input.snapshotId,
+      matchedCandidateIds,
+      rejectedCandidateIds: [],
+      uncertainCandidateIds: [],
+      confidence: matchedCandidateIds.length > 0 ? "high" : "low",
+      reason: "Fake agent treats all snapshot candidates as target-resource matches.",
     };
   }
 
@@ -223,11 +255,24 @@ export class FakeAgentNodes implements AgentNodes {
           : "No fake candidates covered missing episodes.",
     };
   }
+
+  async recognizePackage(input: PackageRecognitionInput): Promise<PackageRecognitionDecision> {
+    return (
+      this.packageRecognition ?? {
+        node: "fake_package_recognition",
+        fileMappings: [],
+        rejectedProviderFileIds: input.files.map((file) => file.providerFileId),
+        confidence: "low",
+        reason: "No fake package recognition mapping configured.",
+      }
+    );
+  }
 }
 
 function isProviderAheadEpisode(episodeCode: string, latestAiredEpisode: number): boolean {
   try {
-    return episodeNumberFromCode(episodeCode) > latestAiredEpisode;
+    const match = /^S\d{2}E(\d{2,})$/.exec(episodeCode);
+    return match !== null && Number(match[1]) > latestAiredEpisode;
   } catch {
     return false;
   }

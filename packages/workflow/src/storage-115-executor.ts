@@ -87,6 +87,15 @@ export interface Storage115ExecutorOptions {
   videoExtensions?: string[];
 }
 
+export interface ProtectedStorage115ExecutorOptions {
+  api: Pan115StorageApi;
+  env?: Record<string, string | undefined>;
+  apiGuard?: Pan115ApiGuard;
+  apiGuardOptions?: Pan115ApiGuardOptions;
+  minVideoSizeBytes?: number;
+  videoExtensions?: string[];
+}
+
 export type Pan115ApiGuardEventKind =
   | "delay"
   | "budget_exhausted"
@@ -516,8 +525,95 @@ export class Storage115Executor implements StorageExecutor {
   }
 }
 
+export function createProtectedStorage115Executor(
+  options: ProtectedStorage115ExecutorOptions,
+): Storage115Executor {
+  const env = options.env ?? process.env;
+  const testRootDirectoryId = optionalDirectoryId(env["MEDIA_TRACK_115_TEST_ROOT_CID"]);
+  const explicitWriteScopeDirectoryIds = directoryIdList(env["MEDIA_TRACK_115_WRITE_SCOPE_CIDS"]);
+  const writeScopeDirectoryIds =
+    explicitWriteScopeDirectoryIds.length > 0
+      ? explicitWriteScopeDirectoryIds
+      : testRootDirectoryId
+        ? [testRootDirectoryId]
+        : [];
+
+  if (writeScopeDirectoryIds.length === 0) {
+    throw new Error(
+      "MEDIA_TRACK_115_WRITE_SCOPE_REQUIRED: set MEDIA_TRACK_115_TEST_ROOT_CID " +
+        "for development or MEDIA_TRACK_115_WRITE_SCOPE_CIDS for explicit live writes",
+    );
+  }
+
+  const protectedDirectoryIds = uniqueDirectoryIds([
+    testRootDirectoryId,
+    env["CLAWD_MEDIA_ROOT_CID"],
+    env["MOVIES_CID"],
+    env["TV_SHOWS_CID"],
+    env["ANIME_CID"],
+    ...directoryIdList(env["MEDIA_TRACK_115_PROTECTED_CIDS"]),
+  ]);
+
+  const executorOptions: Storage115ExecutorOptions = {
+    api: options.api,
+    writeScopeDirectoryIds,
+    protectedDirectoryIds,
+    ...optionalExecutorOptions(options, env),
+  };
+  if (options.apiGuard) {
+    executorOptions.apiGuard = options.apiGuard;
+  } else {
+    executorOptions.apiGuardOptions = {
+      minDelayMs: 1_200,
+      maxCallsPerOperation: 40,
+      maxListItemsPerResponse: 200,
+      ...options.apiGuardOptions,
+    };
+  }
+
+  return new Storage115Executor(executorOptions);
+}
+
 export function isPan115RiskControlSignal(message: string, patterns = DEFAULT_PAN115_RISK_PATTERNS): boolean {
   return patterns.some((pattern) => pattern.test(message));
+}
+
+function optionalExecutorOptions(
+  options: ProtectedStorage115ExecutorOptions,
+  env: Record<string, string | undefined>,
+): Partial<Storage115ExecutorOptions> {
+  const executorOptions: Partial<Storage115ExecutorOptions> = {};
+  const moviesDirectoryId = optionalDirectoryId(env["MOVIES_CID"]);
+  if (moviesDirectoryId) {
+    executorOptions.moviesDirectoryId = moviesDirectoryId;
+  }
+  if (options.minVideoSizeBytes !== undefined) {
+    executorOptions.minVideoSizeBytes = options.minVideoSizeBytes;
+  }
+  if (options.videoExtensions !== undefined) {
+    executorOptions.videoExtensions = options.videoExtensions;
+  }
+  return executorOptions;
+}
+
+function directoryIdList(value: string | undefined): string[] {
+  return uniqueDirectoryIds((value ?? "").split(","));
+}
+
+function uniqueDirectoryIds(values: Array<string | undefined | null>): string[] {
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = optionalDirectoryId(value);
+    if (normalized) {
+      seen.add(normalized);
+    }
+  }
+  return [...seen];
+}
+
+function optionalDirectoryId(value: string | undefined | null): string | null {
+  const normalized = value?.trim() ?? "";
+  return normalized.length > 0 ? normalized : null;
 }
 
 function pan115ActionResultLike(value: unknown): Pan115ActionResult | null {

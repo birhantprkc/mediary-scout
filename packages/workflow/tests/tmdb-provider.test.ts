@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   prepareTrackingTarget,
   TmdbMetadataProvider,
+  TmdbSearchProvider,
 } from "../src/index.js";
 
 describe("TmdbMetadataProvider", () => {
@@ -144,5 +145,111 @@ describe("TmdbMetadataProvider", () => {
       latestAiredSource: "metadata",
     });
     expect(target.keyword).toBe("Show 1080p");
+  });
+});
+
+describe("TmdbSearchProvider", () => {
+  it("maps TMDB multi-search results into media search candidates and enriches TV seasons", async () => {
+    const requests: string[] = [];
+    const provider = new TmdbSearchProvider({
+      readToken: "token",
+      baseURL: "https://tmdb.test/3",
+      fetchJson: async (url, init) => {
+        requests.push(url);
+        expect(init.headers.Authorization).toBe("Bearer token");
+        if (url.includes("/search/multi?")) {
+          return {
+            results: [
+              {
+                id: 289271,
+                media_type: "tv",
+                name: "翘楚",
+                original_name: "翘楚",
+                first_air_date: "2026-06-01",
+                overview: "国产剧",
+                poster_path: "/qiaochu.jpg",
+                backdrop_path: "/qiaochu-bg.jpg",
+              },
+              {
+                id: 1311031,
+                media_type: "movie",
+                title: "我的僵尸女儿",
+                original_title: "My Zombie Daughter",
+                release_date: "2025-10-31",
+                overview: "电影",
+                poster_path: null,
+                backdrop_path: "/zombie-bg.jpg",
+              },
+              {
+                id: 42,
+                media_type: "person",
+                name: "not a media candidate",
+              },
+            ],
+          };
+        }
+        if (url.includes("/tv/289271?")) {
+          return {
+            id: 289271,
+            name: "翘楚",
+            original_name: "翘楚",
+            first_air_date: "2026-06-01",
+            number_of_episodes: 24,
+            last_episode_to_air: {
+              season_number: 1,
+              episode_number: 14,
+            },
+            seasons: [
+              {
+                season_number: 0,
+                episode_count: 1,
+              },
+              {
+                season_number: 1,
+                episode_count: 24,
+              },
+            ],
+          };
+        }
+        throw new Error(`Unexpected URL ${url}`);
+      },
+    });
+
+    const candidates = await provider.searchMedia({ query: "翘楚" });
+
+    expect(requests).toEqual([
+      "https://tmdb.test/3/search/multi?query=%E7%BF%98%E6%A5%9A&include_adult=false&language=zh-CN&page=1",
+      "https://tmdb.test/3/tv/289271?language=zh-CN",
+    ]);
+    expect(candidates).toEqual([
+      {
+        tmdbId: 289271,
+        mediaType: "tv",
+        title: "翘楚",
+        originalTitle: "翘楚",
+        year: 2026,
+        overview: "国产剧",
+        posterPath: "/qiaochu.jpg",
+        backdropPath: "/qiaochu-bg.jpg",
+        seasons: [
+          {
+            seasonNumber: 1,
+            episodeCount: 24,
+            latestAiredEpisode: 14,
+          },
+        ],
+      },
+      {
+        tmdbId: 1311031,
+        mediaType: "movie",
+        title: "我的僵尸女儿",
+        originalTitle: "My Zombie Daughter",
+        year: 2025,
+        overview: "电影",
+        posterPath: null,
+        backdropPath: "/zombie-bg.jpg",
+        seasons: [],
+      },
+    ]);
   });
 });

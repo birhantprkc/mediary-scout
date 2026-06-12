@@ -12,7 +12,9 @@ import {
   type WorkflowRun,
 } from "./domain.js";
 import {
+  claimWorkflowRun,
   cloneWorkflowValue,
+  compareTrackedSeasonStates,
   expireWorkflowRun,
   isActiveWorkflowStatus,
   type PersistedWorkflowRunSnapshot,
@@ -212,6 +214,41 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
     });
   }
 
+  async claimNextQueuedWorkflowRun(input: {
+    kind: WorkflowKind;
+    now: string;
+  }): Promise<PersistedWorkflowRunSnapshot | null> {
+    let committed = false;
+    let claimedRunId: string | null = null;
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const queuedRun = this.selectPayloads<WorkflowRun>("SELECT payload FROM workflow_runs")
+        .filter((workflowRun) => workflowRun.kind === input.kind && workflowRun.status === "queued")
+        .sort((a, b) => a.startedAt.localeCompare(b.startedAt))[0];
+      if (!queuedRun) {
+        this.database.exec("COMMIT");
+        committed = true;
+        return null;
+      }
+
+      const claimedRun = claimWorkflowRun(queuedRun, input.now);
+      this.upsertWorkflowRun(claimedRun);
+      claimedRunId = claimedRun.id;
+      this.database.exec("COMMIT");
+      committed = true;
+    } catch (error) {
+      if (!committed) {
+        this.database.exec("ROLLBACK");
+      }
+      throw error;
+    }
+
+    if (!claimedRunId) {
+      return null;
+    }
+    return this.getWorkflowRunSnapshot(claimedRunId);
+  }
+
   async findActiveWorkflowRun(input: {
     trackedSeasonId: string;
     kind: WorkflowKind;
@@ -248,6 +285,26 @@ export class SQLiteWorkflowRepository implements WorkflowRepository {
       season,
       episodes: this.selectEpisodeStates(season.id),
     };
+  }
+
+  async listTrackedSeasonStates(): Promise<TrackedSeasonState[]> {
+    const seasons = this.selectPayloads<TrackedSeason>("SELECT payload FROM tracked_seasons");
+    return seasons
+      .map((season) => {
+        const title = this.selectPayload<MediaTitle>(
+          "SELECT payload FROM media_titles WHERE id = ?",
+          season.mediaTitleId,
+        );
+        if (!title) {
+          throw new Error(`Missing media title ${season.mediaTitleId} for tracked season ${season.id}`);
+        }
+        return {
+          title,
+          season,
+          episodes: this.selectEpisodeStates(season.id),
+        };
+      })
+      .sort(compareTrackedSeasonStates);
   }
 
   async listEpisodeStates(trackedSeasonId: string): Promise<EpisodeState[]> {

@@ -987,6 +987,50 @@ This real run strengthens the workflow thesis:
 > complete only when the target state has been re-read and matches the workflow
 > invariant.
 
+## Real PanSou To 115 Share Smoke
+
+On 2026-06-12, the TypeScript live adapter path was exercised inside the
+dedicated 115 `test` root:
+
+```text
+PanSou keyword search: 翘楚 4K
+-> filter 115 share candidates
+-> create smoke target directory under 115 test root
+-> receive 115 share into that directory
+-> list target videos through Storage115Executor
+```
+
+Observed result:
+
+- PanSou returned 24 candidates.
+- The smoke target directory was
+  `media-track-transfer-smoke-2026-06-12T06-29-02`.
+- The first 115 share candidate succeeded.
+- Final verification found one video, `S01E15`, in the smoke target directory.
+- No flatten, move, delete, or magnet/offline-task operation was executed.
+
+This proved the cookie-backed `Pan115CookieClient` can perform the real 115
+share receive path when wrapped by `createProtectedStorage115Executor()`.
+
+The live run did not need fallback because the first candidate worked. The new
+`runPan115ShareAdapterSmoke()` path is only an adapter smoke harness: it proves
+that PanSou candidates, 115 share receive, provider failure messages, and final
+file verification can be exercised against the real services.
+
+It must not become production fallback logic. In the product workflow, if a 115
+share is expired, already transferred elsewhere, or otherwise produces no target
+files, the worker records that evidence and stays inside the agent-decision
+boundary. The next candidate to execute must either have already been selected
+by the agent from the current resource snapshot, or come from a fresh agent pass
+that sees the failure evidence and chooses a new snapshot-scoped plan. The
+worker should never mechanically iterate raw PanSou order as a substitute for
+agent judgment.
+
+This smoke also reproduced the provider-ahead case in a concrete way: PanSou
+materialized `S01E15` for `翘楚`, while metadata can lag behind currently
+available resources. The workflow should keep verified storage reality as an
+input to episode state rather than forcing all state to fit stale TMDB metadata.
+
 ## Why This Is More Elegant
 
 This design is more elegant than a single long-running agent because it separates
@@ -1651,9 +1695,12 @@ Hard rules:
 - bind every 115 operation to a user/account scope
 
 The current TypeScript boundary reflects this rule: `Storage115Executor`
-requires an injected `Pan115StorageApi`. A future account-connection service can
-decrypt a user's stored credential, build the concrete 115 API client for that
-user, and pass only that scoped client into the workflow run.
+requires an injected `Pan115StorageApi`. The first concrete adapter is
+`Pan115CookieClient`, which uses the user's 115 cookie to call the cookie-backed
+web API for listing, directory creation, 115 share receive, move, and delete.
+A future account-connection service can decrypt a user's stored credential,
+build that concrete 115 API client for the user, and pass only that scoped
+client into the workflow run.
 
 The executor now also has two structural safety hooks before live 115 writes:
 
@@ -1667,6 +1714,13 @@ This turns the old skill's prompt discipline around "do not mutate the wrong
 directory" into a program boundary. The agent node can still judge resources,
 but it cannot grant itself broader 115 authority.
 
+The Next.js worker only enables this path when `MEDIA_TRACK_STORAGE_ADAPTER=115`.
+It still requires `PAN115_COOKIE` plus `MEDIA_TRACK_115_TEST_ROOT_CID` or
+`MEDIA_TRACK_115_WRITE_SCOPE_CIDS`. Magnet/offline-task execution remains a
+separate adapter milestone because 115's modern offline endpoint uses an
+encrypted payload; the cookie client currently fails that path explicitly rather
+than pretending it is live-ready.
+
 This keeps the product aligned with the larger credential boundary:
 
 ```text
@@ -1674,6 +1728,259 @@ user provides 115 authorization
 service provides TMDB/PanSou/model infrastructure
 workflow runs server-side
 ```
+
+## Frontend Product Surface
+
+The web UI should not become a Netflix-like browsing destination.
+
+The product promise is:
+
+```text
+I know what I want to watch
+-> I search for it
+-> the service starts tracking/acquisition
+-> later I receive a result and can watch it
+```
+
+This means the first tab should be a search-first acquisition surface, not a
+recommendation feed or infinite catalog.
+
+### Search Tab
+
+The initial view can stay simple:
+
+```text
+large search input
+recent or tracked items only if they help orientation
+no broad catalog crawl
+```
+
+Only after the user submits a keyword should the server call TMDB.
+The browser should not hold TMDB credentials, PanSou access, 115 credentials, or
+model keys.
+
+The search route should return layered UI data:
+
+1. lightweight candidate cards
+2. enough metadata for the selected/default candidate detail
+3. known tracking state from the database
+4. an action state: can request, already tracked, or active workflow exists
+
+Next.js App Router is useful here because the page can stream progressively.
+The shell and search input can render immediately. Candidate cards can resolve
+under a Suspense boundary. A selected result's richer detail can resolve under a
+nested boundary. This gives the user a responsive page without forcing the
+server to finish every metadata and status lookup before any HTML is sent.
+
+The important correction is that streaming is a rendering strategy, not a
+license to call every external API for every visible card.
+
+Search should be tiered:
+
+```text
+query submitted
+-> check database for already committed titles
+-> check Redis/search cache for recent TMDB results
+-> call TMDB only on cache miss or explicit refresh
+-> render candidate cards
+-> fetch deeper detail only for selected/expanded candidates
+-> persist durable metadata only when the user requests tracking/acquisition
+```
+
+This avoids turning casual search into an API storm while still letting the UI
+feel rich.
+
+### Library Tab
+
+The second tab is the user's media library / tracked list.
+
+It should be database-driven, not TMDB-driven at render time.
+
+It can show:
+
+- movies that were acquired
+- shows/seasons being tracked
+- current workflow state
+- episode grids
+- next check or last sync time
+- missing / obtained / provider-ahead states
+
+Clicking into a title should read from persisted product state first.
+TMDB should only be used for refresh, reconciliation, or cache miss repair.
+
+The episode grid should keep using backend projections such as
+`getTrackedSeasonStatusView()`. The browser receives explicit display states;
+it should not infer product truth from filenames, TMDB cursors, or local visual
+rules.
+
+### Type 1 Persistence In The Product
+
+The old skill could treat Type 1 as a one-off movie acquisition without durable
+database tracking.
+
+The GUI product cannot.
+
+Movies and completed shows still need durable rows because the library tab,
+notifications, duplicate prevention, audit history, and future repair flows all
+need a stable product record.
+
+Product Type 1 should therefore create:
+
+- a `MediaTitle`
+- an acquisition/tracking record scoped to the user
+- a `WorkflowRun`
+- verified file records
+- a notification event
+- enough metadata to render the library card without live TMDB calls
+
+In other words, the product keeps the old Type 1 effect, but not the old Type 1
+storage shortcut.
+
+### Metadata And Asset Policy
+
+The GUI needs more metadata than the original skill:
+
+- poster path
+- backdrop path
+- overview
+- release/air dates
+- season list
+- episode metadata when relevant
+- provider/cache provenance
+
+The first implementation should store TMDB ids and image paths rather than
+eagerly downloading every poster asset. Image downloading/proxying can come
+later if rate limits, privacy, or stability require it.
+
+Durable Postgres rows should exist for committed/tracked media.
+Redis can hold short-lived query results, request dedupe locks, and rate-limit
+state.
+
+### Multi-season Package Resources
+
+The hardest frontend/product mismatch is season scope.
+
+The current kernel is centered on `TrackedSeason`.
+That works well for ongoing single-season shows, but classic completed shows
+often appear as complete-series or multi-season packages.
+
+Examples:
+
+```text
+Breaking Bad Complete Series
+绝命毒师 全五季
+Season 1 / Season 2 / Season 3
+第1季 / 第2季 / 第3季
+S01 / S02 / S03
+```
+
+Those candidates should not be treated as ordinary single-season resources.
+The resource model needs an explicit coverage classification:
+
+- movie
+- single episode
+- episode range
+- single season
+- multi-season package
+- complete-series package
+- unknown or mixed package
+
+For multi-season packages, the safe product flow should be:
+
+```text
+transfer into a scoped staging directory
+-> snapshot the materialized directory tree
+-> parse season and episode hints from folders/files
+-> build a deterministic move plan
+-> move/copy files into canonical library directories only if confidence is high
+-> otherwise preserve staging state and surface a recoverable workflow result
+```
+
+This should be a deterministic executor with a narrow agent-judgment node for
+ambiguous classification, not a free-form agent rename operation.
+
+The canonical target shape can remain:
+
+```text
+Title (Year)/
+  Season 01/
+    Title.S01E01.ext
+    Title.S01E02.ext
+  Season 02/
+    Title.S02E01.ext
+```
+
+The key rule is that flattening a package is not blind flattening.
+It is package normalization:
+
+```text
+source package tree
+-> planned canonical season/episode tree
+-> verified target files
+-> episode states marked obtained
+```
+
+This implies a future `PackagePlanner` or `SeasonPackageNormalizer` module
+before the product aggressively supports classic multi-season packages.
+
+### Package Normalization Prior Art
+
+Existing media-library tools point in the same direction:
+
+- Plex recommends a stable show folder, year hint, English `Season 01` style
+  season directories, and `S01E01` style episode filenames. It also supports
+  metadata ids such as TMDB/TVDB/IMDb in folder names to improve matching:
+  <https://support.plex.tv/articles/naming-and-organizing-your-tv-show-files/>
+- Jellyfin likewise recommends `Series Name (year) [metadata provider id]`,
+  padded `Season 01` folders, and keeping season folders separate from loose
+  show-root episodes:
+  <https://jellyfin.org/docs/general/server/media/shows/>
+- GuessIt is a mature filename parser that extracts title, season, episode,
+  source, codec, release group, and similar properties from video filenames:
+  <https://github.com/guessit-io/guessit>
+- Sonarr history shows why multi-season packs are dangerous to automate
+  blindly. A package such as `S01-S09` can contain files for many seasons, while
+  season-scoped import logic may reject or misclassify them. Obfuscated files in
+  season packs are especially unsafe because there is no reliable episode
+  identity to parse:
+  <https://github.com/Sonarr/Sonarr/issues/3826>
+  <https://forums.sonarr.tv/t/episodes-downloaded-but-not-processed-waiting-to-import/29605>
+- TRaSH Guides emphasize preserving non-recoverable details such as quality,
+  source, release group, edition, and repack/proper status in filenames because
+  those details are difficult or impossible to reconstruct later:
+  <https://trash-guides.info/Sonarr/Sonarr-recommended-naming-scheme/>
+- TMDB exposes episode groups for alternate orders. This matters for anime,
+  DVD/Blu-ray orders, and shows whose provider package order differs from aired
+  order:
+  <https://developer.themoviedb.org/reference/tv-series-episode-groups>
+
+The product conclusion is not "regex can solve everything".
+
+The safer algorithm is layered:
+
+```text
+metadata context
+-> deterministic filename/folder parser
+-> agent package-recognition node for ambiguous cases
+-> deterministic validation and duplicate checks
+-> canonical move plan
+-> scoped executor
+-> physical verification
+```
+
+This keeps agent intelligence in the recognition layer while preserving
+deterministic safety for every filesystem/storage mutation.
+
+The TypeScript workflow kernel now has the first slice of this shape:
+
+- `buildPackageNormalizationPlan(...)` parses clear package trees into canonical
+  season/episode move plans.
+- `buildAgentAssistedPackageNormalizationPlan(...)` calls an agent recognition
+  node only when deterministic parsing is low confidence.
+- `AgentNodes.recognizePackage(...)` returns structured file mappings such as
+  `providerFileId -> seasonNumber + episodeNumber`.
+- The planner still rejects duplicate mappings and unmapped files instead of
+  choosing arbitrarily.
 
 ## Open Questions
 
@@ -1698,6 +2005,12 @@ The next design pass should answer:
     first-party extension based, or web-native QR based?
 17. What encryption/key-management mechanism protects stored 115 cookies?
 18. What is the reconnect/revoke UX when a 115 session expires?
+19. Which search result detail fields are fetched for all candidates versus only
+    for selected/expanded candidates?
+20. What is the first supported multi-season package policy: reject, stage-only,
+    or normalize into canonical season directories?
+21. Does the data model need a `TrackedTitle` / `TrackedSeries` layer above
+    `TrackedSeason` before multi-season package support ships?
 
 These are product policy questions, not just technical questions.
 

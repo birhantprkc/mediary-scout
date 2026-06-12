@@ -1,10 +1,15 @@
 import type {
   AgentDecision,
+  CandidateMatchDecision,
   ResourceCandidate,
   ResourceSnapshot,
   TransferAttempt,
   VerifiedFile,
 } from "./domain.js";
+import type {
+  PackageRecognitionDecision,
+  PackageRecognitionInput,
+} from "./package-normalizer.js";
 
 export interface ResourceProvider {
   search(input: { keyword: string }): Promise<ResourceSnapshot>;
@@ -29,10 +34,17 @@ export interface AgentNodes {
     missingEpisodes: string[];
     previousErrors: string[];
   }): Promise<{ keywords: string[]; reason: string }>;
+  matchCandidates(input: {
+    snapshotId: string;
+    title: string;
+    aliases: string[];
+    candidates: ResourceCandidate[];
+  }): Promise<CandidateMatchDecision>;
   selectEpisodeCoverage(input: {
     snapshotId: string;
     candidates: ResourceCandidate[];
     missingEpisodes: string[];
     latestAiredEpisode: number;
   }): Promise<AgentDecision>;
+  recognizePackage(input: PackageRecognitionInput): Promise<PackageRecognitionDecision>;
 }

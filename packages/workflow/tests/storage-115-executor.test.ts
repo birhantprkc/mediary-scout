@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createProtectedStorage115Executor,
   Pan115ApiGuard,
   Pan115RiskControlError,
   Storage115Executor,
@@ -11,6 +12,95 @@ import {
 } from "../src/index.js";
 
 describe("Storage115Executor", () => {
+  it("refuses to create a protected live executor without a configured write scope", () => {
+    expect(() =>
+      createProtectedStorage115Executor({
+        api: new FakePan115Api(),
+        env: {},
+        apiGuardOptions: { minDelayMs: 0 },
+      }),
+    ).toThrow("MEDIA_TRACK_115_WRITE_SCOPE_REQUIRED");
+  });
+
+  it("uses the configured 115 test root as the default write scope", async () => {
+    const api = new FakePan115Api({
+      shareFiles: {
+        abc123: [
+          {
+            fid: "file_1",
+            n: "Show.S01E01.mkv",
+            s: "1000000000",
+          },
+        ],
+      },
+      directoryInfo: {
+        season_1: seasonPathInfo("test_root", "season_1"),
+        outside_season: seasonPathInfo("other_root", "outside_season"),
+      },
+    });
+    const executor = createProtectedStorage115Executor({
+      api,
+      env: {
+        MEDIA_TRACK_115_TEST_ROOT_CID: "test_root",
+      },
+      apiGuardOptions: { minDelayMs: 0 },
+    });
+
+    await expect(
+      executor.transfer({
+        workflowRunId: "run_1",
+        directoryId: "outside_season",
+        candidate: candidateFixture({
+          type: "115",
+          providerPayload: {
+            url: "https://115.com/s/abc123?password=pw",
+            rawType: "115",
+          },
+        }),
+      }),
+    ).rejects.toThrow("WRITE_SCOPE_VIOLATION");
+
+    await expect(
+      executor.transfer({
+        workflowRunId: "run_1",
+        directoryId: "season_1",
+        candidate: candidateFixture({
+          type: "115",
+          providerPayload: {
+            url: "https://115.com/s/abc123?password=pw",
+            rawType: "115",
+          },
+        }),
+      }),
+    ).resolves.toMatchObject({ status: "succeeded" });
+    expect(api.receivedShares).toEqual([
+      {
+        shareCode: "abc123",
+        receiveCode: "pw",
+        directoryId: "season_1",
+      },
+    ]);
+  });
+
+  it("marks configured 115 library roots and the test root as protected flatten targets", async () => {
+    const executor = createProtectedStorage115Executor({
+      api: new FakePan115Api(),
+      env: {
+        MEDIA_TRACK_115_TEST_ROOT_CID: "test_root",
+        CLAWD_MEDIA_ROOT_CID: "media_root",
+        TV_SHOWS_CID: "tv_root",
+      },
+      apiGuardOptions: { minDelayMs: 0 },
+    });
+
+    await expect(executor.flattenDirectory("test_root")).rejects.toThrow(
+      "SAFETY_VIOLATION: refusing to flatten protected directory cid=test_root",
+    );
+    await expect(executor.flattenDirectory("tv_root")).rejects.toThrow(
+      "SAFETY_VIOLATION: refusing to flatten protected directory cid=tv_root",
+    );
+  });
+
   it("transfers a selected 115 candidate and verifies newly materialized video files", async () => {
     const api = new FakePan115Api({
       shareFiles: {

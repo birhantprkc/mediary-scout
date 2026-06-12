@@ -15,7 +15,7 @@ import {
   type TmdbMetadataProvider,
 } from "./tmdb-provider.js";
 
-export type TrackingInitializationRequestStatus = "already_running" | "already_tracked" | "completed";
+export type TrackingInitializationRequestStatus = "already_running" | "already_tracked" | "queued" | "completed";
 
 export interface EpisodeProgressSummary {
   totalEpisodes: number;
@@ -53,6 +53,96 @@ export interface TrackingFromTmdbSelectionInput {
 
 export interface TrackingFromTmdbSelectionResult extends PreparedTrackingTarget {
   request: TrackingInitializationRequestResult;
+}
+
+export async function queueTrackingInitialization(input: {
+  title: MediaTitle;
+  season: TrackedSeason;
+  keyword: string;
+  repository: WorkflowRepository;
+  createWorkflowRunId?: () => string;
+  now?: () => string;
+  staleActiveRunTimeoutMs?: number;
+}): Promise<TrackingInitializationRequestResult> {
+  const now = input.now ?? (() => new Date().toISOString());
+  const workflowRunId = input.createWorkflowRunId?.() ?? crypto.randomUUID();
+  const queuedAt = now();
+  const staleActiveRunStartedBefore = staleStartedBefore(queuedAt, input.staleActiveRunTimeoutMs);
+  const initialEpisodes = createEpisodeStates({
+    trackedSeasonId: input.season.id,
+    seasonNumber: input.season.seasonNumber,
+    totalEpisodes: input.season.totalEpisodes,
+    latestAiredEpisode: input.season.latestAiredEpisode,
+  });
+
+  const reservation = await input.repository.reserveWorkflowRun({
+    title: input.title,
+    season: input.season,
+    workflowRun: {
+      id: workflowRunId,
+      kind: "type2_init",
+      status: "queued",
+      trackedSeasonId: input.season.id,
+      startedAt: queuedAt,
+      finishedAt: null,
+      auditEvents: [
+        {
+          type: "workflow_reserved",
+          message: `Reserved tracking initialization workflow ${workflowRunId}`,
+        },
+        {
+          type: "tracking_request_queued",
+          message: `Queued tracking initialization workflow ${workflowRunId}`,
+          data: { keyword: input.keyword },
+        },
+      ],
+    },
+    episodes: initialEpisodes,
+    resourceSnapshots: [],
+    decisions: [],
+    transferAttempts: [],
+    notifications: [],
+    blockIfEpisodeStatesExist: true,
+    ...(staleActiveRunStartedBefore
+      ? {
+          staleActiveRunStartedBefore,
+          staleFinishedAt: queuedAt,
+        }
+      : {}),
+  });
+
+  if (reservation.status === "already_active") {
+    return {
+      status: "already_running",
+      titleId: input.title.id,
+      trackedSeasonId: input.season.id,
+      workflowRunId: reservation.snapshot.workflowRun.id,
+      workflowStatus: reservation.snapshot.workflowRun.status,
+      notification: reservation.snapshot.notifications[0] ?? null,
+      progress: summarizeEpisodeProgress(input.season, reservation.snapshot.episodes),
+    };
+  }
+  if (reservation.status === "already_has_episode_state") {
+    return {
+      status: "already_tracked",
+      titleId: input.title.id,
+      trackedSeasonId: input.season.id,
+      workflowRunId: null,
+      workflowStatus: null,
+      notification: null,
+      progress: summarizeEpisodeProgress(input.season, reservation.episodes),
+    };
+  }
+
+  return {
+    status: "queued",
+    titleId: input.title.id,
+    trackedSeasonId: input.season.id,
+    workflowRunId,
+    workflowStatus: "queued",
+    notification: null,
+    progress: summarizeEpisodeProgress(input.season, initialEpisodes),
+  };
 }
 
 export async function requestTrackingFromTmdbSelection(

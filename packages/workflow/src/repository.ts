@@ -57,11 +57,16 @@ export interface WorkflowRepository {
   saveWorkflowRunSnapshot(input: PersistWorkflowRunSnapshotInput): Promise<void>;
   reserveWorkflowRun(input: ReserveWorkflowRunInput): Promise<WorkflowRunReservationResult>;
   getWorkflowRunSnapshot(workflowRunId: string): Promise<PersistedWorkflowRunSnapshot | null>;
+  claimNextQueuedWorkflowRun(input: {
+    kind: WorkflowKind;
+    now: string;
+  }): Promise<PersistedWorkflowRunSnapshot | null>;
   findActiveWorkflowRun(input: {
     trackedSeasonId: string;
     kind: WorkflowKind;
   }): Promise<PersistedWorkflowRunSnapshot | null>;
   getTrackedSeasonState(trackedSeasonId: string): Promise<TrackedSeasonState | null>;
+  listTrackedSeasonStates(): Promise<TrackedSeasonState[]>;
   listEpisodeStates(trackedSeasonId: string): Promise<EpisodeState[]>;
 }
 
@@ -120,6 +125,26 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
     return withDerivedEpisodeSummaries(cloneWorkflowValue(stored));
   }
 
+  async claimNextQueuedWorkflowRun(input: {
+    kind: WorkflowKind;
+    now: string;
+  }): Promise<PersistedWorkflowRunSnapshot | null> {
+    const queuedRun = Array.from(this.workflowRuns.values())
+      .filter((snapshot) => snapshot.workflowRun.kind === input.kind && snapshot.workflowRun.status === "queued")
+      .sort((a, b) => a.workflowRun.startedAt.localeCompare(b.workflowRun.startedAt))[0];
+    if (!queuedRun) {
+      return null;
+    }
+
+    const claimed = cloneWorkflowValue({
+      ...queuedRun,
+      workflowRun: claimWorkflowRun(queuedRun.workflowRun, input.now),
+    });
+    this.workflowRuns.set(claimed.workflowRun.id, claimed);
+
+    return withDerivedEpisodeSummaries(cloneWorkflowValue(claimed));
+  }
+
   async findActiveWorkflowRun(input: {
     trackedSeasonId: string;
     kind: WorkflowKind;
@@ -149,6 +174,28 @@ export class InMemoryWorkflowRepository implements WorkflowRepository {
       season: latestSnapshot.season,
       episodes: this.episodesBySeason.get(trackedSeasonId) ?? latestSnapshot.episodes,
     });
+  }
+
+  async listTrackedSeasonStates(): Promise<TrackedSeasonState[]> {
+    const latestBySeason = new Map<string, PersistWorkflowRunSnapshotInput>();
+    const snapshots = Array.from(this.workflowRuns.values()).sort((a, b) =>
+      b.workflowRun.startedAt.localeCompare(a.workflowRun.startedAt),
+    );
+    for (const snapshot of snapshots) {
+      if (!latestBySeason.has(snapshot.season.id)) {
+        latestBySeason.set(snapshot.season.id, snapshot);
+      }
+    }
+
+    return Array.from(latestBySeason.values())
+      .map((snapshot) =>
+        cloneWorkflowValue({
+          title: snapshot.title,
+          season: snapshot.season,
+          episodes: this.episodesBySeason.get(snapshot.season.id) ?? snapshot.episodes,
+        }),
+      )
+      .sort(compareTrackedSeasonStates);
   }
 
   async listEpisodeStates(trackedSeasonId: string): Promise<EpisodeState[]> {
@@ -290,4 +337,28 @@ export function expireWorkflowRun(workflowRun: WorkflowRun, finishedAt: string):
       },
     ],
   };
+}
+
+export function claimWorkflowRun(workflowRun: WorkflowRun, claimedAt: string): WorkflowRun {
+  return {
+    ...workflowRun,
+    status: "running",
+    finishedAt: null,
+    auditEvents: [
+      ...workflowRun.auditEvents,
+      {
+        type: "workflow_claimed",
+        message: `Claimed queued workflow run ${workflowRun.id}`,
+        data: { claimedAt },
+      },
+    ],
+  };
+}
+
+export function compareTrackedSeasonStates(a: TrackedSeasonState, b: TrackedSeasonState): number {
+  return (
+    a.title.title.localeCompare(b.title.title) ||
+    a.season.seasonNumber - b.season.seasonNumber ||
+    a.season.id.localeCompare(b.season.id)
+  );
 }

@@ -4,6 +4,7 @@ import type {
   MediaType,
   TrackedSeason,
 } from "./domain.js";
+import type { MediaSearchCandidate, MediaSearchProvider } from "./search-view.js";
 
 export interface TmdbFetchInit {
   method: "GET";
@@ -17,6 +18,11 @@ export interface TmdbMetadataProviderOptions {
   baseURL?: string;
   language?: string;
   fetchJson?: TmdbFetchJson;
+}
+
+export interface TmdbSearchProviderOptions extends TmdbMetadataProviderOptions {
+  maxResults?: number;
+  tvDetailsLimit?: number;
 }
 
 export interface TvTrackingTargetInput {
@@ -99,6 +105,75 @@ export class TmdbMetadataProvider {
   }
 }
 
+export class TmdbSearchProvider implements MediaSearchProvider {
+  private readonly readToken: string;
+  private readonly baseURL: string;
+  private readonly language: string;
+  private readonly fetchJson: TmdbFetchJson;
+  private readonly maxResults: number;
+  private readonly tvDetailsLimit: number;
+
+  constructor(options: TmdbSearchProviderOptions) {
+    this.readToken = options.readToken;
+    this.baseURL = (options.baseURL ?? "https://api.themoviedb.org/3").replace(/\/+$/, "");
+    this.language = options.language ?? "zh-CN";
+    this.fetchJson = options.fetchJson ?? defaultFetchJson;
+    this.maxResults = options.maxResults ?? 10;
+    this.tvDetailsLimit = options.tvDetailsLimit ?? this.maxResults;
+  }
+
+  async searchMedia(input: { query: string }): Promise<MediaSearchCandidate[]> {
+    const query = normalizeTitle(input.query);
+    if (!query) {
+      return [];
+    }
+
+    const response = await this.get("search/multi", {
+      query,
+      include_adult: "false",
+      language: this.language,
+      page: "1",
+    });
+    const results = parseSearchResults(response).slice(0, this.maxResults);
+    const candidates: MediaSearchCandidate[] = [];
+    let tvDetailsRequests = 0;
+
+    for (const result of results) {
+      if (result.media_type === "movie") {
+        candidates.push(movieSearchCandidate(result));
+      }
+
+      if (result.media_type === "tv") {
+        const details =
+          tvDetailsRequests < this.tvDetailsLimit ? await this.getTvDetails(result.id) : null;
+        tvDetailsRequests += details ? 1 : 0;
+        candidates.push(tvSearchCandidate(result, details));
+      }
+    }
+
+    return candidates;
+  }
+
+  private async getTvDetails(tmdbId: number): Promise<TmdbTvDetails> {
+    return parseTvDetails(
+      await this.get(`tv/${tmdbId}`, {
+        language: this.language,
+      }),
+    );
+  }
+
+  private async get(path: string, query: Record<string, string>): Promise<unknown> {
+    const url = `${this.baseURL}/${path}?${new URLSearchParams(query).toString()}`;
+    return this.fetchJson(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${this.readToken}`,
+        "Content-Type": "application/json;charset=utf-8",
+      },
+    });
+  }
+}
+
 export function createTmdbMetadataProviderFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): TmdbMetadataProvider {
@@ -107,6 +182,14 @@ export function createTmdbMetadataProviderFromEnv(
     throw new Error("TMDB_READ_TOKEN is required to create TmdbMetadataProvider");
   }
   return new TmdbMetadataProvider({ readToken });
+}
+
+export function createTmdbSearchProviderFromEnv(env: NodeJS.ProcessEnv = process.env): TmdbSearchProvider {
+  const readToken = env.TMDB_READ_TOKEN;
+  if (!readToken) {
+    throw new Error("TMDB_READ_TOKEN is required to create TmdbSearchProvider");
+  }
+  return new TmdbSearchProvider({ readToken });
 }
 
 export async function prepareTrackingTarget(input: TvTrackingTargetInput): Promise<PreparedTrackingTarget> {
@@ -185,6 +268,127 @@ function parseSeasonDetails(value: unknown): TmdbSeasonDetails {
       ? value["episodes"].filter(isRecord).map(optionalSeasonEpisode)
       : [],
   };
+}
+
+type TmdbSearchResult =
+  | {
+      id: number;
+      media_type: "movie";
+      title: string;
+      original_title: string;
+      release_date: string;
+      overview: string;
+      poster_path: string | null;
+      backdrop_path: string | null;
+    }
+  | {
+      id: number;
+      media_type: "tv";
+      name: string;
+      original_name: string;
+      first_air_date: string;
+      overview: string;
+      poster_path: string | null;
+      backdrop_path: string | null;
+    };
+
+function parseSearchResults(value: unknown): TmdbSearchResult[] {
+  if (!isRecord(value)) {
+    throw new Error("TMDB search response must be an object");
+  }
+  if (!Array.isArray(value["results"])) {
+    return [];
+  }
+  return value["results"].filter(isRecord).flatMap(optionalSearchResult);
+}
+
+function optionalSearchResult(value: Record<string, unknown>): TmdbSearchResult[] {
+  const mediaType = value["media_type"];
+  if (mediaType === "movie") {
+    const title = normalizeTitle(stringValue(value["title"]));
+    if (!title) {
+      return [];
+    }
+    return [
+      {
+        id: numberValue(value["id"]),
+        media_type: "movie",
+        title,
+        original_title: stringValue(value["original_title"]),
+        release_date: stringValue(value["release_date"]),
+        overview: stringValue(value["overview"]),
+        poster_path: optionalStringOrNull(value["poster_path"]),
+        backdrop_path: optionalStringOrNull(value["backdrop_path"]),
+      },
+    ];
+  }
+  if (mediaType === "tv") {
+    const name = normalizeTitle(stringValue(value["name"]));
+    if (!name) {
+      return [];
+    }
+    return [
+      {
+        id: numberValue(value["id"]),
+        media_type: "tv",
+        name,
+        original_name: stringValue(value["original_name"]),
+        first_air_date: stringValue(value["first_air_date"]),
+        overview: stringValue(value["overview"]),
+        poster_path: optionalStringOrNull(value["poster_path"]),
+        backdrop_path: optionalStringOrNull(value["backdrop_path"]),
+      },
+    ];
+  }
+  return [];
+}
+
+function tvSearchCandidate(result: Extract<TmdbSearchResult, { media_type: "tv" }>, details: TmdbTvDetails | null): MediaSearchCandidate {
+  const title = normalizeTitle(result.name);
+  return {
+    tmdbId: result.id,
+    mediaType: "tv",
+    title,
+    originalTitle: normalizeTitle(result.original_name) || title,
+    year: yearFromDate(result.first_air_date),
+    overview: result.overview,
+    posterPath: result.poster_path,
+    backdropPath: result.backdrop_path,
+    seasons: details ? searchSeasonsFromTvDetails(details) : [],
+  };
+}
+
+function movieSearchCandidate(result: Extract<TmdbSearchResult, { media_type: "movie" }>): MediaSearchCandidate {
+  const title = normalizeTitle(result.title);
+  return {
+    tmdbId: result.id,
+    mediaType: "movie",
+    title,
+    originalTitle: normalizeTitle(result.original_title) || title,
+    year: yearFromDate(result.release_date),
+    overview: result.overview,
+    posterPath: result.poster_path,
+    backdropPath: result.backdrop_path,
+    seasons: [],
+  };
+}
+
+function searchSeasonsFromTvDetails(details: TmdbTvDetails): MediaSearchCandidate["seasons"] {
+  return (details.seasons ?? [])
+    .filter((season) => (season.season_number ?? 0) > 0)
+    .map((season) => {
+      const seasonNumber = season.season_number ?? 0;
+      const episodeCount = season.episode_count ?? 0;
+      const latestAiredEpisode =
+        details.last_episode_to_air?.season_number === seasonNumber
+          ? details.last_episode_to_air.episode_number ?? 0
+          : episodeCount;
+      return {
+        seasonNumber,
+        episodeCount,
+        latestAiredEpisode: Math.min(episodeCount, latestAiredEpisode),
+      };
+    });
 }
 
 function optionalEpisodePointer(value: Record<string, unknown>): {
@@ -294,6 +498,10 @@ function optionalNumberValue(value: unknown): number | undefined {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function optionalStringOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

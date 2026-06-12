@@ -89,6 +89,16 @@ export interface AgentDecision {
   reason: string;
 }
 
+export interface CandidateMatchDecision {
+  node: string;
+  snapshotId: string;
+  matchedCandidateIds: string[];
+  rejectedCandidateIds: string[];
+  uncertainCandidateIds: string[];
+  confidence: Confidence;
+  reason: string;
+}
+
 export interface TransferAttempt {
   id: string;
   workflowRunId: string;

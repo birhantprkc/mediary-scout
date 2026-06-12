@@ -3,9 +3,14 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import type {
   AgentDecision,
+  CandidateMatchDecision,
   Confidence,
   ResourceCandidate,
 } from "./domain.js";
+import type {
+  PackageRecognitionDecision,
+  PackageRecognitionInput,
+} from "./package-normalizer.js";
 import type { AgentNodes } from "./ports.js";
 
 const DEFAULT_PROVIDER_NAME = "xiaomi-mimo";
@@ -25,12 +30,37 @@ const episodeCoverageSchema = z.object({
   reason: z.string(),
 });
 
+const candidateMatchSchema = z.object({
+  matchedCandidateIds: z.array(z.string()),
+  rejectedCandidateIds: z.array(z.string()),
+  uncertainCandidateIds: z.array(z.string()),
+  confidence: z.enum(["low", "medium", "high"]),
+  reason: z.string(),
+});
+
+const packageRecognitionSchema = z.object({
+  fileMappings: z.array(
+    z.object({
+      providerFileId: z.string(),
+      seasonNumber: z.number().int().positive(),
+      episodeNumber: z.number().int().positive(),
+      confidence: z.enum(["low", "medium", "high"]),
+      reason: z.string(),
+    }),
+  ),
+  rejectedProviderFileIds: z.array(z.string()),
+  confidence: z.enum(["low", "medium", "high"]),
+  reason: z.string(),
+});
+
 type KeywordGenerationOutput = z.infer<typeof keywordGenerationSchema>;
 type EpisodeCoverageOutput = z.infer<typeof episodeCoverageSchema>;
-type StructuredOutput = KeywordGenerationOutput | EpisodeCoverageOutput;
+type CandidateMatchOutput = z.infer<typeof candidateMatchSchema>;
+type PackageRecognitionOutput = z.infer<typeof packageRecognitionSchema>;
+type StructuredOutput = KeywordGenerationOutput | EpisodeCoverageOutput | CandidateMatchOutput | PackageRecognitionOutput;
 
 export interface StructuredOutputRequest {
-  schemaName: "keyword_generation" | "episode_coverage";
+  schemaName: "keyword_generation" | "candidate_match" | "episode_coverage" | "package_recognition";
   system: string;
   prompt: string;
 }
@@ -83,6 +113,48 @@ export class VercelAiAgentNodes implements AgentNodes {
     };
   }
 
+  async matchCandidates(input: {
+    snapshotId: string;
+    title: string;
+    aliases: string[];
+    candidates: ResourceCandidate[];
+  }): Promise<CandidateMatchDecision> {
+    const output = candidateMatchSchema.parse(
+      await this.generateStructuredOutput({
+        schemaName: "candidate_match",
+        system:
+          "You judge which resource candidates refer to the target media title for a deterministic acquisition workflow. Return only candidate ids from the provided snapshot. Do not decide episode coverage here.",
+        prompt: JSON.stringify(
+          {
+            snapshotId: input.snapshotId,
+            targetTitle: input.title,
+            aliases: input.aliases,
+            candidates: input.candidates.map((candidate) => ({
+              id: candidate.id,
+              title: candidate.title,
+              type: candidate.type,
+              source: candidate.source,
+              episodeHints: candidate.episodeHints,
+              qualityHints: candidate.qualityHints,
+            })),
+          },
+          null,
+          2,
+        ),
+      }),
+    );
+
+    return {
+      node: "vercel_ai_candidate_match",
+      snapshotId: input.snapshotId,
+      matchedCandidateIds: output.matchedCandidateIds,
+      rejectedCandidateIds: output.rejectedCandidateIds,
+      uncertainCandidateIds: output.uncertainCandidateIds,
+      confidence: output.confidence as Confidence,
+      reason: output.reason,
+    };
+  }
+
   async selectEpisodeCoverage(input: {
     snapshotId: string;
     candidates: ResourceCandidate[];
@@ -125,6 +197,41 @@ export class VercelAiAgentNodes implements AgentNodes {
       reason: output.reason,
     };
   }
+
+  async recognizePackage(input: PackageRecognitionInput): Promise<PackageRecognitionDecision> {
+    const output = packageRecognitionSchema.parse(
+      await this.generateStructuredOutput({
+        schemaName: "package_recognition",
+        system:
+          "You map ambiguous media package files to season and episode numbers for a deterministic workflow. Return structured data only. Never invent files outside the provided providerFileIds.",
+        prompt: JSON.stringify(
+          {
+            title: input.title,
+            year: input.year,
+            files: input.files.map((file) => ({
+              path: file.path,
+              providerFileId: file.providerFileId,
+              sizeBytes: file.sizeBytes,
+            })),
+            parserEvidence: input.parserEvidence,
+          },
+          null,
+          2,
+        ),
+      }),
+    );
+
+    return {
+      node: "vercel_ai_package_recognition",
+      fileMappings: output.fileMappings.map((mapping) => ({
+        ...mapping,
+        confidence: mapping.confidence as Confidence,
+      })),
+      rejectedProviderFileIds: output.rejectedProviderFileIds,
+      confidence: output.confidence as Confidence,
+      reason: output.reason,
+    };
+  }
 }
 
 export function createXiaomiMimoAgentNodesFromEnv(
@@ -163,6 +270,32 @@ function createAiSdkStructuredGenerator(options: VercelAiAgentNodesOptions): Gen
         output: Output.object({
           schema: keywordGenerationSchema,
           name: "keyword_generation",
+        }),
+      });
+      return output;
+    }
+
+    if (request.schemaName === "candidate_match") {
+      const { output } = await generateText({
+        model,
+        system: request.system,
+        prompt: request.prompt,
+        output: Output.object({
+          schema: candidateMatchSchema,
+          name: "candidate_match",
+        }),
+      });
+      return output;
+    }
+
+    if (request.schemaName === "package_recognition") {
+      const { output } = await generateText({
+        model,
+        system: request.system,
+        prompt: request.prompt,
+        output: Output.object({
+          schema: packageRecognitionSchema,
+          name: "package_recognition",
         }),
       });
       return output;

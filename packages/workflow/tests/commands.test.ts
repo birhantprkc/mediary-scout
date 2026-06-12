@@ -6,6 +6,7 @@ import {
   FakeResourceProvider,
   FakeStorageExecutor,
   InMemoryWorkflowRepository,
+  queueTrackingInitialization,
   requestTrackingInitialization,
   type EpisodeState,
   type MediaTitle,
@@ -15,6 +16,45 @@ import {
 } from "../src/index.js";
 
 describe("requestTrackingInitialization", () => {
+  it("queues a type2 initialization without searching resources or touching storage", async () => {
+    const repository = new InMemoryWorkflowRepository();
+    const { title, season } = trackedFixture();
+
+    const result = await queueTrackingInitialization({
+      title,
+      season,
+      keyword: "Show 4K",
+      repository,
+      createWorkflowRunId: () => "run_queued_type2",
+      now: fixedNow,
+    });
+
+    expect(result).toMatchObject({
+      status: "queued",
+      workflowRunId: "run_queued_type2",
+      workflowStatus: "queued",
+      progress: {
+        totalEpisodes: 2,
+        latestAiredEpisode: 1,
+        obtainedEpisodes: [],
+        missingAiredEpisodes: ["S01E01"],
+      },
+    });
+    await expect(repository.getWorkflowRunSnapshot("run_queued_type2")).resolves.toMatchObject({
+      workflowRun: {
+        id: "run_queued_type2",
+        status: "queued",
+        auditEvents: [
+          { type: "workflow_reserved" },
+          {
+            type: "tracking_request_queued",
+            data: { keyword: "Show 4K" },
+          },
+        ],
+      },
+    });
+  });
+
   it("returns an existing active workflow without searching again", async () => {
     const repository = new InMemoryWorkflowRepository();
     const { title, season } = trackedFixture();
