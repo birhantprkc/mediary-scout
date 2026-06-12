@@ -4,6 +4,7 @@ export * from "./fakes.js";
 export * from "./workflow.js";
 export * from "./plan-validation.js";
 export * from "./acquisition-planning-smoke.js";
+export * from "./dedup.js";
 export * from "./repository.js";
 export * from "./sqlite.js";
 export * from "./runner.js";

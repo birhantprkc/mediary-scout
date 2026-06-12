@@ -10,8 +10,10 @@ import {
   type ResourceSnapshot,
   type TrackedSeason,
   type TransferAttempt,
+  type VerifiedFile,
   type WorkflowStatus,
 } from "./domain.js";
+import { buildDedupPlan } from "./dedup.js";
 import {
   deriveAgentDecision,
   validateAcquisitionPlan,
@@ -79,7 +81,11 @@ export async function runType2Initialization(input: {
         });
 
   await input.storage.flattenDirectory(input.season.storageDirectoryId);
-  const verifiedFiles = await input.storage.listVideoFiles(input.season.storageDirectoryId);
+  const verifiedFiles = await dedupeLandingDirectory({
+    storage: input.storage,
+    directoryId: input.season.storageDirectoryId,
+    auditEvents,
+  });
   const reconciledEpisodes = reconcileVerifiedFiles({
     season: input.season,
     episodes,
@@ -189,10 +195,23 @@ export async function runType3Monitoring(input: {
   });
 
   await input.storage.flattenDirectory(input.season.storageDirectoryId);
-  const finalFiles = await input.storage.listVideoFiles(input.season.storageDirectoryId);
+  const finalFiles = await dedupeLandingDirectory({
+    storage: input.storage,
+    directoryId: input.season.storageDirectoryId,
+    auditEvents,
+  });
   episodes = reconcileVerifiedFiles({
     season: input.season,
-    episodes,
+    // Rebuild from the post-dedup listing: verifiedFileIds reflect current
+    // storage truth, not the history of files that once existed.
+    episodes: episodes.map((episode) => {
+      const matchingFiles = finalFiles.filter((file) => file.episodeCode === episode.episodeCode);
+      return {
+        ...episode,
+        obtained: matchingFiles.length > 0,
+        verifiedFileIds: matchingFiles.map((file) => file.id),
+      };
+    }),
     files: finalFiles,
   });
   const obtainedEpisodes = obtainedEpisodeCodes(episodes);
@@ -351,6 +370,52 @@ async function acquireMissingEpisodes(input: {
   }
 
   return { resourceSnapshots, decisions, transferAttempts };
+}
+
+/**
+ * Verification-first duplicate cleanup. The plan is built from one verified
+ * snapshot, deletion is the only side effect, and the directory is re-read
+ * afterwards: a dedup is complete only when the re-read shows one file per
+ * episode.
+ */
+async function dedupeLandingDirectory(input: {
+  storage: StorageExecutor;
+  directoryId: string;
+  auditEvents: AuditEvent[];
+}): Promise<VerifiedFile[]> {
+  const files = await input.storage.listVideoFiles(input.directoryId);
+  const plan = buildDedupPlan({ files });
+  if (plan.deleteFileIds.length === 0) {
+    return files;
+  }
+
+  input.auditEvents.push({
+    type: "dedup_plan_created",
+    message: `Deleting ${plan.deleteFileIds.length} smaller duplicate files`,
+    data: {
+      duplicateGroups: plan.duplicateGroups,
+      deleteFileIds: plan.deleteFileIds,
+      keepFileIds: plan.keepFileIds,
+    },
+  });
+  await input.storage.deleteFiles({ directoryId: input.directoryId, fileIds: plan.deleteFileIds });
+
+  const filesAfter = await input.storage.listVideoFiles(input.directoryId);
+  const verification = buildDedupPlan({ files: filesAfter });
+  if (verification.deleteFileIds.length > 0) {
+    input.auditEvents.push({
+      type: "dedup_verification_failed",
+      message: `Duplicates remain after deletion: ${Object.keys(verification.duplicateGroups).join(", ")}`,
+      data: { duplicateGroups: verification.duplicateGroups },
+    });
+  } else {
+    input.auditEvents.push({
+      type: "dedup_verified",
+      message: "One verified file per episode after deduplication",
+      data: { deletedCount: plan.deleteFileIds.length },
+    });
+  }
+  return filesAfter;
 }
 
 function buildFailureEvidence(input: {

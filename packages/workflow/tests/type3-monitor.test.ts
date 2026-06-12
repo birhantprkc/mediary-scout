@@ -564,3 +564,83 @@ class OmittingDispositionAgentNodes extends FakeAgentNodes {
     };
   }
 }
+
+describe("runType3Monitoring dedup", () => {
+  it("deletes smaller duplicates after overlapping transfers and keeps episodes obtained", async () => {
+    const { title, season } = qiaochuFixture();
+    const repairSeason = { ...season, latestAiredEpisode: 14 };
+    const existingFiles: VerifiedFile[] = [
+      ...obtainedFiles(12, season.storageDirectoryId),
+      {
+        id: "small_e13",
+        storageDirectoryId: season.storageDirectoryId,
+        name: "翘楚.S01E13.720p.mkv",
+        sizeBytes: 500_000_000,
+        episodeCode: "S01E13",
+        providerFileId: "small_e13",
+      },
+    ];
+    const initialEpisodes = reconcileVerifiedFiles({
+      season: repairSeason,
+      episodes: createEpisodeStates({
+        trackedSeasonId: season.id,
+        seasonNumber: season.seasonNumber,
+        totalEpisodes: season.totalEpisodes,
+        latestAiredEpisode: 14,
+      }),
+      files: existingFiles,
+    });
+    const storage = new FakeStorageExecutor({
+      directories: { [season.storageDirectoryId]: existingFiles },
+      transferOutcomes: {
+        snapshot_1_candidate_1: {
+          status: "succeeded",
+          providerMessage: "",
+          files: [
+            {
+              id: "big_e13",
+              storageDirectoryId: season.storageDirectoryId,
+              name: "翘楚.S01E13.2160p.mkv",
+              sizeBytes: 5_000_000_000,
+              episodeCode: "S01E13",
+              providerFileId: "big_e13",
+            },
+            {
+              id: "file_e14",
+              storageDirectoryId: season.storageDirectoryId,
+              name: "翘楚.S01E14.2160p.mkv",
+              sizeBytes: 5_000_000_000,
+              episodeCode: "S01E14",
+              providerFileId: "file_e14",
+            },
+          ],
+        },
+      },
+    });
+    const resourceProvider = new FakeResourceProvider({
+      keywordResults: {
+        "翘楚 4K": [{ title: "翘楚 S01E13-S01E14 4K包", episodeHints: ["S01E13", "S01E14"] }],
+      },
+    });
+
+    const result = await runType3Monitoring({
+      title,
+      season: repairSeason,
+      episodes: initialEpisodes,
+      keyword: "翘楚 4K",
+      resourceProvider,
+      storage,
+      agents: new FakeAgentNodes(),
+    });
+
+    expect(result.status).toBe("succeeded");
+    const finalFiles = await storage.listVideoFiles(season.storageDirectoryId);
+    const e13Files = finalFiles.filter((file) => file.episodeCode === "S01E13");
+    expect(e13Files.map((file) => file.id)).toEqual(["big_e13"]);
+    const e13State = result.episodes.find((episode) => episode.episodeCode === "S01E13");
+    expect(e13State).toMatchObject({ obtained: true, verifiedFileIds: ["big_e13"] });
+    const auditTypes = result.auditEvents.map((event) => event.type);
+    expect(auditTypes).toContain("dedup_plan_created");
+    expect(auditTypes).toContain("dedup_verified");
+  });
+});
