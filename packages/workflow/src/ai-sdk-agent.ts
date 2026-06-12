@@ -48,6 +48,7 @@ const packageRecognitionSchema = z.object({
     }),
   ),
   rejectedProviderFileIds: z.array(z.string()),
+  foreignWorkProviderFileIds: z.array(z.string()).optional(),
   confidence: z.enum(["low", "medium", "high"]),
   reason: z.string(),
 });
@@ -161,6 +162,9 @@ export class VercelAiAgentNodes implements AgentNodes {
         confidence: mapping.confidence as Confidence,
       })),
       rejectedProviderFileIds: output.rejectedProviderFileIds,
+      ...(output.foreignWorkProviderFileIds === undefined
+        ? {}
+        : { foreignWorkProviderFileIds: output.foreignWorkProviderFileIds }),
       confidence: output.confidence as Confidence,
       reason: output.reason,
     };

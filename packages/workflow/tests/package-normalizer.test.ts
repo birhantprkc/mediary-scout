@@ -151,3 +151,36 @@ function file(path: string) {
     providerFileId: path,
   };
 }
+
+  it("surfaces agent-flagged foreign works as warnings without mapping them", async () => {
+    const plan = await buildAgentAssistedPackageNormalizationPlan({
+      title: "绝命毒师",
+      year: 2008,
+      files: [
+        file("pack/绝命毒师 S01/Breaking.Bad.S01E01.mkv"),
+        file("pack/续命之徒：绝命毒师电影/El.Camino.2019.mkv"),
+      ],
+      agents: {
+        recognizePackage: async () => ({
+          node: "test",
+          fileMappings: [
+            {
+              providerFileId: "pack/绝命毒师 S01/Breaking.Bad.S01E01.mkv",
+              seasonNumber: 1,
+              episodeNumber: 1,
+              confidence: "high",
+              reason: "episode file",
+            },
+          ],
+          rejectedProviderFileIds: ["pack/续命之徒：绝命毒师电影/El.Camino.2019.mkv"],
+          foreignWorkProviderFileIds: ["pack/续命之徒：绝命毒师电影/El.Camino.2019.mkv"],
+          confidence: "high",
+          reason: "El Camino is a separate movie title",
+        }),
+      },
+    });
+
+    expect(plan.actions).toHaveLength(1);
+    expect(plan.warnings.some((warning) => warning.includes("可能属于其他作品"))).toBe(true);
+    expect(plan.warnings.some((warning) => warning.includes("El.Camino"))).toBe(true);
+  });

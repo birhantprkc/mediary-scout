@@ -80,6 +80,8 @@ export interface PackageRecognitionDecision {
   node?: string;
   fileMappings: PackageRecognitionFileMapping[];
   rejectedProviderFileIds: string[];
+  /** Files the agent judges to belong to a DIFFERENT title (e.g. a bundled movie). Never mapped; surfaced for user review. */
+  foreignWorkProviderFileIds?: string[];
   confidence: Confidence;
   reason: string;
 }
@@ -138,10 +140,16 @@ export async function buildAgentAssistedPackageNormalizationPlan(
     };
   }
 
-  return buildPackageNormalizationPlan({
+  const assisted = buildPackageNormalizationPlan({
     ...input,
     recognitionMappings: decision.fileMappings,
   });
+  const foreignWarnings = (decision.foreignWorkProviderFileIds ?? []).map(
+    (providerFileId) => `文件可能属于其他作品（建议人工确认是否单独入库）: ${providerFileId}`,
+  );
+  return foreignWarnings.length > 0
+    ? { ...assisted, warnings: [...assisted.warnings, ...foreignWarnings] }
+    : assisted;
 }
 
 export function buildPackageNormalizationPlan(input: PackageNormalizationInput): PackageNormalizationPlan {
