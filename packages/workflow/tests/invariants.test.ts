@@ -270,56 +270,6 @@ describe("fake adapters", () => {
     expect(files.map((file) => file.id)).toEqual(["file_13"]);
   });
 
-  it("fake agent selects candidates that cover missing episodes", async () => {
-    const agent = new FakeAgentNodes();
-    const decision = await agent.selectEpisodeCoverage({
-      snapshotId: "snapshot_1",
-      candidates: [
-        {
-          id: "candidate_1",
-          snapshotId: "snapshot_1",
-          index: 0,
-          title: "翘楚 S01E13",
-          type: "115",
-          source: "fake",
-          episodeHints: ["S01E13"],
-          qualityHints: ["4K"],
-          providerPayload: {},
-        },
-      ],
-      missingEpisodes: ["S01E13"],
-      latestAiredEpisode: 14,
-    });
-
-    expect(decision.selectedCandidateIds).toEqual(["candidate_1"]);
-    expect(decision.episodeMapping).toEqual({ candidate_1: ["S01E13"] });
-  });
-
-  it("fake agent ignores invalid episode hints when mapping provider-ahead episodes", async () => {
-    const agent = new FakeAgentNodes();
-    const decision = await agent.selectEpisodeCoverage({
-      snapshotId: "snapshot_1",
-      candidates: [
-        {
-          id: "candidate_1",
-          snapshotId: "snapshot_1",
-          index: 0,
-          title: "翘楚 S01E13 with provider noise",
-          type: "115",
-          source: "fake",
-          episodeHints: ["S01E13", "noise"],
-          qualityHints: ["4K"],
-          providerPayload: {},
-        },
-      ],
-      missingEpisodes: ["S01E13"],
-      latestAiredEpisode: 14,
-    });
-
-    expect(decision.selectedCandidateIds).toEqual(["candidate_1"]);
-    expect(decision.episodeMapping).toEqual({ candidate_1: ["S01E13"] });
-    expect(decision.providerAheadEpisodeMapping).toEqual({});
-  });
 });
 
 function candidateFixture(id: string): ResourceCandidate {

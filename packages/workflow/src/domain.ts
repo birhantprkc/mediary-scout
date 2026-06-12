@@ -89,25 +89,6 @@ export interface AgentDecision {
   reason: string;
 }
 
-export interface CandidateMatchDecision {
-  node: string;
-  snapshotId: string;
-  matchedCandidateIds: string[];
-  rejectedCandidateIds: string[];
-  uncertainCandidateIds: string[];
-  confidence: Confidence;
-  reason: string;
-}
-
-export interface ResourceDiscoveryDecision {
-  node: string;
-  selectedSnapshotId: string | null;
-  searchedKeywords: string[];
-  rejectedSnapshotIds: string[];
-  confidence: Confidence;
-  reason: string;
-}
-
 export type CandidateDispositionKind = "selected" | "rejected" | "uncertain";
 
 export interface CandidateDisposition {

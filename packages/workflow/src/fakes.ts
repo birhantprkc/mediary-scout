@@ -1,7 +1,5 @@
 import {
-  type AgentDecision,
   type CandidateDisposition,
-  type CandidateMatchDecision,
   type ResourceCandidate,
   type ResourceSnapshot,
   type TransferAttempt,
@@ -16,8 +14,6 @@ import type {
   AcquisitionPlanningInput,
   AcquisitionPlanningResult,
   AgentNodes,
-  ResourceDiscoveryInput,
-  ResourceDiscoveryResult,
   ResourceProvider,
   StorageExecutor,
 } from "./ports.js";
@@ -284,196 +280,6 @@ export class FakeAgentNodes implements AgentNodes {
     };
   }
 
-  async generateKeywords(input: {
-    title: string;
-    aliases: string[];
-    missingEpisodes: string[];
-    previousErrors: string[];
-  }): Promise<{ keywords: string[]; reason: string }> {
-    return {
-      keywords: [input.title, ...input.aliases, `${input.title} 4K`],
-      reason:
-        input.previousErrors.length > 0
-          ? "Generated keywords after prior fake errors."
-          : "Generated baseline fake keywords.",
-    };
-  }
-
-  async discoverResources(input: ResourceDiscoveryInput): Promise<ResourceDiscoveryResult> {
-    const keywordPlan = await this.generateKeywords({
-      title: input.title,
-      aliases: input.aliases,
-      missingEpisodes: input.missingEpisodes,
-      previousErrors: [],
-    });
-    const snapshots: ResourceSnapshot[] = [];
-    const searchedKeywords: string[] = [];
-    const rejectedSnapshotIds: string[] = [];
-    const trace: ResourceDiscoveryResult["trace"] = [
-      {
-        type: "node_start",
-        nodeName: "ResourceDiscoveryAgent",
-        schemaName: "resource_discovery",
-        maxSteps: 6,
-      },
-    ];
-    let lastEmptySnapshot: ResourceSnapshot | null = null;
-    let lastError: unknown = null;
-
-    for (const keyword of uniqueKeywords([input.initialKeyword, ...keywordPlan.keywords])) {
-      searchedKeywords.push(keyword);
-      trace.push({
-        type: "tool_call",
-        nodeName: "ResourceDiscoveryAgent",
-        toolName: "searchResources",
-        input: { keyword },
-      });
-      try {
-        const snapshot = await input.searchResources({ keyword });
-        snapshots.push(snapshot);
-        trace.push({
-          type: "tool_result",
-          nodeName: "ResourceDiscoveryAgent",
-          toolName: "searchResources",
-          output: {
-            snapshotId: snapshot.id,
-            keyword: snapshot.keyword,
-            candidateCount: snapshot.candidates.length,
-          },
-        });
-
-        if (snapshot.candidates.length > 0) {
-          trace.push({
-            type: "node_finish",
-            nodeName: "ResourceDiscoveryAgent",
-            schemaName: "resource_discovery",
-          });
-          return {
-            snapshot,
-            snapshots,
-            decision: {
-              node: "fake_resource_discovery",
-              selectedSnapshotId: snapshot.id,
-              searchedKeywords,
-              rejectedSnapshotIds,
-              confidence: "high",
-              reason: "Fake discovery selected the first non-empty resource snapshot.",
-            },
-            trace,
-          };
-        }
-
-        lastEmptySnapshot = snapshot;
-        rejectedSnapshotIds.push(snapshot.id);
-      } catch (error) {
-        lastError = error;
-        trace.push({
-          type: "tool_result",
-          nodeName: "ResourceDiscoveryAgent",
-          toolName: "searchResources",
-          output: {
-            keyword,
-            error: errorMessage(error),
-          },
-        });
-      }
-    }
-
-    trace.push({
-      type: "node_finish",
-      nodeName: "ResourceDiscoveryAgent",
-      schemaName: "resource_discovery",
-    });
-
-    if (lastError !== null) {
-      throw lastError instanceof Error
-        ? lastError
-        : new Error(`Resource discovery failed before a usable resource snapshot could be created: ${String(lastError)}`);
-    }
-
-    if (lastEmptySnapshot !== null) {
-      return {
-        snapshot: lastEmptySnapshot,
-        snapshots,
-        decision: {
-          node: "fake_resource_discovery",
-          selectedSnapshotId: lastEmptySnapshot.id,
-          searchedKeywords,
-          rejectedSnapshotIds,
-          confidence: "low",
-          reason: "Fake discovery found only empty snapshots.",
-        },
-        trace,
-      };
-    }
-
-    throw new Error("Resource discovery failed before a resource snapshot could be created");
-  }
-
-  async matchCandidates(input: {
-    snapshotId: string;
-    title: string;
-    aliases: string[];
-    candidates: ResourceCandidate[];
-  }): Promise<CandidateMatchDecision> {
-    const matchedCandidateIds = input.candidates.map((candidate) => candidate.id);
-    return {
-      node: "fake_candidate_match",
-      snapshotId: input.snapshotId,
-      matchedCandidateIds,
-      rejectedCandidateIds: [],
-      uncertainCandidateIds: [],
-      confidence: matchedCandidateIds.length > 0 ? "high" : "low",
-      reason: "Fake agent treats all snapshot candidates as target-resource matches.",
-    };
-  }
-
-  async selectEpisodeCoverage(input: {
-    snapshotId: string;
-    candidates: ResourceCandidate[];
-    missingEpisodes: string[];
-    latestAiredEpisode: number;
-  }): Promise<AgentDecision> {
-    const missing = new Set(input.missingEpisodes);
-    const selectedCandidates = input.candidates.filter((candidate) =>
-      candidate.episodeHints.some((episodeHint) => missing.has(episodeHint)),
-    );
-    const selectedCandidateIds = selectedCandidates.map((candidate) => candidate.id);
-    const selectedIds = new Set(selectedCandidateIds);
-    const episodeMapping = Object.fromEntries(
-      selectedCandidates.map((candidate) => [
-        candidate.id,
-        candidate.episodeHints.filter((episodeHint) => missing.has(episodeHint)),
-      ]),
-    );
-    const providerAheadEntries: Array<[string, string[]]> = [];
-    for (const candidate of selectedCandidates) {
-      const episodeHints = candidate.episodeHints.filter((episodeHint) =>
-        isProviderAheadEpisode(episodeHint, input.latestAiredEpisode),
-      );
-      if (episodeHints.length > 0) {
-        providerAheadEntries.push([candidate.id, episodeHints]);
-      }
-    }
-    const providerAheadEpisodeMapping = Object.fromEntries(providerAheadEntries);
-
-    return {
-      node: "fake_episode_coverage",
-      snapshotId: input.snapshotId,
-      selectedCandidateIds,
-      episodeMapping,
-      providerAheadEpisodeMapping,
-      rejectedCandidateIds: input.candidates
-        .filter((candidate) => !selectedIds.has(candidate.id))
-        .map((candidate) => candidate.id),
-      confidence: selectedCandidateIds.length > 0 ? "high" : "low",
-      reason:
-        selectedCandidateIds.length > 0
-          ? "Selected fake candidates covering missing episodes."
-          : "No fake candidates covered missing episodes.",
-    };
-  }
-
   async recognizePackage(input: PackageRecognitionInput): Promise<PackageRecognitionDecision> {
     return (
       this.packageRecognition ?? {
@@ -484,15 +290,6 @@ export class FakeAgentNodes implements AgentNodes {
         reason: "No fake package recognition mapping configured.",
       }
     );
-  }
-}
-
-function isProviderAheadEpisode(episodeCode: string, latestAiredEpisode: number): boolean {
-  try {
-    const match = /^S\d{2}E(\d{2,})$/.exec(episodeCode);
-    return match !== null && Number(match[1]) > latestAiredEpisode;
-  } catch {
-    return false;
   }
 }
 

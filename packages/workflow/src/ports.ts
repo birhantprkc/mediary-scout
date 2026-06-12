@@ -1,9 +1,6 @@
 import type {
   AcquisitionFailureEvidence,
   AcquisitionPlan,
-  AgentDecision,
-  CandidateMatchDecision,
-  ResourceDiscoveryDecision,
   ResourceCandidate,
   ResourceSnapshot,
   TransferAttempt,
@@ -31,21 +28,6 @@ export interface StorageExecutor {
   deleteFiles(input: { directoryId: string; fileIds: string[] }): Promise<{ deleted: string[] }>;
 }
 
-export interface ResourceDiscoveryInput {
-  title: string;
-  aliases: string[];
-  missingEpisodes: string[];
-  initialKeyword: string;
-  searchResources(input: { keyword: string }): Promise<ResourceSnapshot>;
-}
-
-export interface ResourceDiscoveryResult {
-  snapshot: ResourceSnapshot;
-  snapshots: ResourceSnapshot[];
-  decision: ResourceDiscoveryDecision;
-  trace: AgentNodeTraceEvent[];
-}
-
 export interface AcquisitionPlanningInput {
   title: string;
   aliases: string[];
@@ -64,26 +46,13 @@ export interface AcquisitionPlanningResult {
   trace: AgentNodeTraceEvent[];
 }
 
+/**
+ * The agent boundary. One node owns the whole acquisition judgment
+ * (search strategy, target matching, episode mapping, selection) through
+ * read-only tools; one node maps ambiguous package files. Neither can
+ * create directories, transfer, delete, or mutate workflow state.
+ */
 export interface AgentNodes {
   planAcquisition(input: AcquisitionPlanningInput): Promise<AcquisitionPlanningResult>;
-  generateKeywords(input: {
-    title: string;
-    aliases: string[];
-    missingEpisodes: string[];
-    previousErrors: string[];
-  }): Promise<{ keywords: string[]; reason: string }>;
-  discoverResources(input: ResourceDiscoveryInput): Promise<ResourceDiscoveryResult>;
-  matchCandidates(input: {
-    snapshotId: string;
-    title: string;
-    aliases: string[];
-    candidates: ResourceCandidate[];
-  }): Promise<CandidateMatchDecision>;
-  selectEpisodeCoverage(input: {
-    snapshotId: string;
-    candidates: ResourceCandidate[];
-    missingEpisodes: string[];
-    latestAiredEpisode: number;
-  }): Promise<AgentDecision>;
   recognizePackage(input: PackageRecognitionInput): Promise<PackageRecognitionDecision>;
 }
