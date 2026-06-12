@@ -525,6 +525,151 @@ describe("runType2Initialization canonical landing directory", () => {
   });
 });
 
+describe("pre-acquisition reconcile of existing season content", () => {
+  it("subtracts episodes already in the season directory from the planning need set", async () => {
+    const title: MediaTitle = {
+      id: "title_qiaochu",
+      tmdbId: 289271,
+      type: "tv",
+      title: "翘楚",
+      originalTitle: "翘楚",
+      year: 2026,
+      aliases: ["Ashes to Crown"],
+    };
+    const season: TrackedSeason = {
+      id: "season_qiaochu_1",
+      mediaTitleId: title.id,
+      seasonNumber: 1,
+      status: "active",
+      qualityPreference: "4K",
+      storageDirectoryId: "dir_qiaochu_s1",
+      totalEpisodes: 24,
+      latestAiredEpisode: 14,
+      latestAiredSource: "metadata",
+    };
+    // A previous run already landed E01-E13; only E14 is genuinely missing.
+    const existingFiles = Array.from({ length: 13 }, (_, index) => {
+      const episode = `S01E${String(index + 1).padStart(2, "0")}`;
+      return {
+        id: `existing_${episode}`,
+        storageDirectoryId: "dir_qiaochu_s1",
+        name: `翘楚.${episode}.mkv`,
+        sizeBytes: 1_000_000_000,
+        episodeCode: episode,
+        providerFileId: `existing_${episode}`,
+      };
+    });
+    const recordedNeedSets: string[][] = [];
+    const agents = new (class extends FakeAgentNodes {
+      override async planAcquisition(input: AcquisitionPlanningInput): Promise<AcquisitionPlanningResult> {
+        recordedNeedSets.push([...input.missingEpisodes]);
+        return super.planAcquisition(input);
+      }
+    })();
+    const storage = new FakeStorageExecutor({
+      directories: { dir_qiaochu_s1: existingFiles },
+      transferOutcomes: {
+        snapshot_1_candidate_14: {
+          status: "succeeded",
+          providerMessage: "",
+          files: [
+            {
+              id: "file_S01E14",
+              storageDirectoryId: "set_by_fake",
+              name: "翘楚.S01E14.mkv",
+              sizeBytes: 1_000_000_000,
+              episodeCode: "S01E14",
+              providerFileId: "provider_S01E14",
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await runType2Initialization({
+      title,
+      season,
+      keyword: "翘楚 4K",
+      storageParentDirectoryId: "library_root",
+      resourceProvider: new FakeResourceProvider({
+        keywordResults: {
+          "翘楚 4K": Array.from({ length: 14 }, (_, index) => ({
+            title: `翘楚 S01E${String(index + 1).padStart(2, "0")} 4K`,
+            episodeHints: [`S01E${String(index + 1).padStart(2, "0")}`],
+            qualityHints: ["4K"],
+          })),
+        },
+      }),
+      storage,
+      agents,
+    });
+
+    expect(recordedNeedSets).toEqual([["S01E14"]]);
+    expect(result.transferAttempts).toHaveLength(1);
+    expect(result.status).toBe("succeeded");
+    expect(result.obtainedEpisodes).toHaveLength(14);
+    expect(result.auditEvents.map((event) => event.type)).toContain("existing_content_reconciled");
+  });
+
+  it("skips planning entirely when the season directory already covers every aired episode", async () => {
+    const title: MediaTitle = {
+      id: "title_show",
+      tmdbId: 1,
+      type: "tv",
+      title: "Show",
+      originalTitle: "Show",
+      year: 2026,
+      aliases: [],
+    };
+    const season: TrackedSeason = {
+      id: "season_show_1",
+      mediaTitleId: title.id,
+      seasonNumber: 1,
+      status: "active",
+      qualityPreference: "4K",
+      storageDirectoryId: "dir_show_s1",
+      totalEpisodes: 1,
+      latestAiredEpisode: 1,
+      latestAiredSource: "metadata",
+    };
+    let planCalls = 0;
+    const agents = new (class extends FakeAgentNodes {
+      override async planAcquisition(input: AcquisitionPlanningInput): Promise<AcquisitionPlanningResult> {
+        planCalls += 1;
+        return super.planAcquisition(input);
+      }
+    })();
+
+    const result = await runType2Initialization({
+      title,
+      season,
+      keyword: "Show 4K",
+      storageParentDirectoryId: "library_root",
+      resourceProvider: new FakeResourceProvider({ keywordResults: {} }),
+      storage: new FakeStorageExecutor({
+        directories: {
+          dir_show_s1: [
+            {
+              id: "existing_S01E01",
+              storageDirectoryId: "dir_show_s1",
+              name: "Show.S01E01.mkv",
+              sizeBytes: 1_000_000_000,
+              episodeCode: "S01E01",
+              providerFileId: "existing_S01E01",
+            },
+          ],
+        },
+      }),
+      agents,
+    });
+
+    expect(planCalls).toBe(0);
+    expect(result.status).toBe("succeeded");
+    expect(result.transferAttempts).toEqual([]);
+    expect(result.obtainedEpisodes).toEqual(["S01E01"]);
+  });
+});
+
 describe("snapshot id dedupe", () => {
   it("keeps one copy when the provider content-hashes identical results to the same snapshot id", async () => {
     const title: MediaTitle = {

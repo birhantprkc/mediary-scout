@@ -82,12 +82,28 @@ export async function runType2Initialization(input: {
       "MEDIA_TRACK_STAGING_PARENT_REQUIRED: provide storageParentDirectoryId so staging directories can live outside the season directory",
     );
   }
-  const episodes = createEpisodeStates({
+  const freshEpisodes = createEpisodeStates({
     trackedSeasonId: season.id,
     seasonNumber: season.seasonNumber,
     totalEpisodes: season.totalEpisodes,
     latestAiredEpisode: season.latestAiredEpisode,
   });
+  // The need set is what the season directory is actually missing, not the
+  // full aired list: a re-run of an initialization that already landed files
+  // must not re-transfer them.
+  const existingFiles = await input.storage.listVideoFiles(season.storageDirectoryId);
+  const episodes =
+    existingFiles.length === 0
+      ? freshEpisodes
+      : reconcileVerifiedFiles({ season, episodes: freshEpisodes, files: existingFiles });
+  const alreadyObtained = obtainedEpisodeCodes(episodes);
+  if (alreadyObtained.length > 0) {
+    auditEvents.push({
+      type: "existing_content_reconciled",
+      message: `${alreadyObtained.length} episodes already present in the season directory; excluded from the acquisition need set`,
+      data: { seasonNumber: season.seasonNumber, episodes: alreadyObtained },
+    });
+  }
   const missingEpisodes = actionableMissingEpisodes(episodes);
 
   const outcome =
@@ -411,23 +427,62 @@ export async function runSeriesInitialization(input: {
     data: { showDirectoryId },
   });
 
+  // Every season in a series-initialization intent becomes tracked: ensure a
+  // canonical directory exists even when this run obtains nothing for it, so
+  // Type 3 can monitor and retry. This is standing tracking intent, not
+  // speculative pre-creation. Find-or-create also makes re-runs see what
+  // previous runs already landed.
+  const seasonDirectoryIds: Record<number, string> = {};
+  const trackedSeasons = new Map<number, TrackedSeason>();
+  for (const seasonMeta of input.seasons) {
+    const storageDirectoryId = await input.storage.createDirectory({
+      name: `Season ${seasonMeta.seasonNumber}`,
+      parentId: showDirectoryId,
+    });
+    seasonDirectoryIds[seasonMeta.seasonNumber] = storageDirectoryId;
+    trackedSeasons.set(seasonMeta.seasonNumber, {
+      id: `${input.title.id}_s${seasonMeta.seasonNumber}`,
+      mediaTitleId: input.title.id,
+      seasonNumber: seasonMeta.seasonNumber,
+      status: seasonMeta.latestAiredEpisode >= seasonMeta.totalEpisodes ? "completed" : "active",
+      qualityPreference,
+      storageDirectoryId,
+      totalEpisodes: seasonMeta.totalEpisodes,
+      latestAiredEpisode: seasonMeta.latestAiredEpisode,
+      latestAiredSource: "metadata",
+    });
+  }
+
   const episodesBySeason = new Map<number, EpisodeState[]>();
-  for (const season of input.seasons) {
-    episodesBySeason.set(
-      season.seasonNumber,
-      createEpisodeStates({
-        trackedSeasonId: `${input.title.id}_s${season.seasonNumber}`,
-        seasonNumber: season.seasonNumber,
-        totalEpisodes: season.totalEpisodes,
-        latestAiredEpisode: season.latestAiredEpisode,
-      }),
-    );
+  for (const seasonMeta of input.seasons) {
+    const season = trackedSeasons.get(seasonMeta.seasonNumber)!;
+    const freshEpisodes = createEpisodeStates({
+      trackedSeasonId: season.id,
+      seasonNumber: seasonMeta.seasonNumber,
+      totalEpisodes: seasonMeta.totalEpisodes,
+      latestAiredEpisode: seasonMeta.latestAiredEpisode,
+    });
+    // The need set is what each canonical season directory is actually
+    // missing: a re-run never re-transfers episodes a previous run landed.
+    const existingFiles = await input.storage.listVideoFiles(season.storageDirectoryId);
+    const episodes =
+      existingFiles.length === 0
+        ? freshEpisodes
+        : reconcileVerifiedFiles({ season, episodes: freshEpisodes, files: existingFiles });
+    const alreadyObtained = obtainedEpisodeCodes(episodes);
+    if (alreadyObtained.length > 0) {
+      auditEvents.push({
+        type: "existing_content_reconciled",
+        message: `Season ${seasonMeta.seasonNumber}: ${alreadyObtained.length} episodes already present; excluded from the acquisition need set`,
+        data: { seasonNumber: seasonMeta.seasonNumber, episodes: alreadyObtained },
+      });
+    }
+    episodesBySeason.set(seasonMeta.seasonNumber, episodes);
   }
   const missingEpisodes = [...episodesBySeason.values()].flatMap((episodes) =>
     actionableMissingEpisodes(episodes),
   );
 
-  const seasonDirectoryIds: Record<number, string> = {};
   const outcome =
     missingEpisodes.length === 0
       ? emptyAcquisitionOutcome()
@@ -448,31 +503,10 @@ export async function runSeriesInitialization(input: {
           maxPlanningPasses: input.maxPlanningPasses ?? DEFAULT_MAX_PLANNING_PASSES,
         });
 
-  // Every season in a series-initialization intent becomes tracked: ensure a
-  // canonical directory exists even when this run obtained nothing for it,
-  // so Type 3 can monitor and retry. This is standing tracking intent, not
-  // speculative pre-creation.
-  for (const season of input.seasons) {
-    seasonDirectoryIds[season.seasonNumber] ??= await input.storage.createDirectory({
-      name: `Season ${season.seasonNumber}`,
-      parentId: showDirectoryId,
-    });
-  }
-
   const seasonResults: SeriesInitializationSeasonResult[] = [];
   for (const seasonMeta of input.seasons) {
-    const storageDirectoryId = seasonDirectoryIds[seasonMeta.seasonNumber]!;
-    const season: TrackedSeason = {
-      id: `${input.title.id}_s${seasonMeta.seasonNumber}`,
-      mediaTitleId: input.title.id,
-      seasonNumber: seasonMeta.seasonNumber,
-      status: seasonMeta.latestAiredEpisode >= seasonMeta.totalEpisodes ? "completed" : "active",
-      qualityPreference,
-      storageDirectoryId,
-      totalEpisodes: seasonMeta.totalEpisodes,
-      latestAiredEpisode: seasonMeta.latestAiredEpisode,
-      latestAiredSource: "metadata",
-    };
+    const season = trackedSeasons.get(seasonMeta.seasonNumber)!;
+    const storageDirectoryId = season.storageDirectoryId;
     const verifiedFiles = await dedupeLandingDirectory({
       storage: input.storage,
       directoryId: storageDirectoryId,

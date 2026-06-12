@@ -172,6 +172,141 @@ describe("runSeriesInitialization", () => {
   });
 });
 
+describe("idempotent series re-initialization", () => {
+  it("re-running acquires nothing and plans nothing when every episode already landed", async () => {
+    let planCalls = 0;
+    const agents = new (class extends FakeAgentNodes {
+      override async planAcquisition(
+        ...args: Parameters<FakeAgentNodes["planAcquisition"]>
+      ): ReturnType<FakeAgentNodes["planAcquisition"]> {
+        planCalls += 1;
+        return super.planAcquisition(...args);
+      }
+    })();
+    const storage = new FakeStorageExecutor({
+      transferOutcomes: {
+        snapshot_1_candidate_1: {
+          status: "succeeded",
+          providerMessage: "",
+          files: [
+            file("f_s1e1", "S01E01"),
+            file("f_s1e2", "S01E02"),
+            file("f_s2e1", "S02E01"),
+            file("f_s2e2", "S02E02"),
+          ],
+        },
+      },
+    });
+    const resourceProvider = new FakeResourceProvider({
+      keywordResults: {
+        "黑袍纠察队 4K": [
+          {
+            title: "黑袍纠察队 S1-S2 混合包 4K",
+            episodeHints: ["S01E01", "S01E02", "S02E01", "S02E02"],
+          },
+        ],
+      },
+    });
+
+    const firstRun = await runSeriesInitialization({
+      title: theBoys,
+      seasons,
+      keyword: "黑袍纠察队 4K",
+      storageParentDirectoryId: "library_root",
+      resourceProvider,
+      storage,
+      agents,
+      workflowRunId: "run_series_first",
+    });
+    expect(firstRun.status).toBe("succeeded");
+    expect(planCalls).toBe(1);
+
+    const secondRun = await runSeriesInitialization({
+      title: theBoys,
+      seasons,
+      keyword: "黑袍纠察队 4K",
+      storageParentDirectoryId: "library_root",
+      resourceProvider,
+      storage,
+      agents,
+      workflowRunId: "run_series_second",
+    });
+
+    expect(planCalls).toBe(1);
+    expect(secondRun.transferAttempts).toEqual([]);
+    expect(secondRun.status).toBe("succeeded");
+    const s2 = secondRun.seasons.find((entry) => entry.season.seasonNumber === 2)!;
+    expect(s2.obtainedEpisodes).toEqual(["S02E01", "S02E02"]);
+  });
+
+  it("asks the planning agent only for the episodes still missing on a partial re-run", async () => {
+    const recordedNeedSets: string[][] = [];
+    const agents = new (class extends FakeAgentNodes {
+      override async planAcquisition(
+        ...args: Parameters<FakeAgentNodes["planAcquisition"]>
+      ): ReturnType<FakeAgentNodes["planAcquisition"]> {
+        recordedNeedSets.push([...args[0].missingEpisodes]);
+        return super.planAcquisition(...args);
+      }
+    })();
+    const storage = new FakeStorageExecutor({
+      transferOutcomes: {
+        // first run only covers S1
+        snapshot_1_candidate_1: {
+          status: "succeeded",
+          providerMessage: "",
+          files: [file("f_s1e1", "S01E01"), file("f_s1e2", "S01E02")],
+        },
+        // second run's provider exposes the S2 episodes
+        snapshot_2_candidate_1: {
+          status: "succeeded",
+          providerMessage: "",
+          files: [file("f_s2e1", "S02E01"), file("f_s2e2", "S02E02")],
+        },
+      },
+    });
+
+    // One shared provider so snapshot ids keep incrementing across runs;
+    // the second run searches a different keyword and sees the S2 resource.
+    const resourceProvider = new FakeResourceProvider({
+      keywordResults: {
+        "黑袍纠察队 4K": [{ title: "S01 全集包", episodeHints: ["S01E01", "S01E02"] }],
+        "黑袍纠察队 S2": [
+          { title: "黑袍纠察队 S02E01-02 4K", episodeHints: ["S02E01", "S02E02"] },
+        ],
+      },
+    });
+
+    const firstRun = await runSeriesInitialization({
+      title: theBoys,
+      seasons,
+      keyword: "黑袍纠察队 4K",
+      storageParentDirectoryId: "library_root",
+      resourceProvider,
+      storage,
+      agents,
+      workflowRunId: "run_series_first",
+      maxPlanningPasses: 1,
+    });
+    expect(firstRun.status).toBe("partial");
+
+    await runSeriesInitialization({
+      title: theBoys,
+      seasons,
+      keyword: "黑袍纠察队 S2",
+      storageParentDirectoryId: "library_root",
+      resourceProvider,
+      storage,
+      agents,
+      workflowRunId: "run_series_second",
+      maxPlanningPasses: 1,
+    });
+
+    expect(recordedNeedSets[0]).toEqual(["S01E01", "S01E02", "S02E01", "S02E02"]);
+    expect(recordedNeedSets[1]).toEqual(["S02E01", "S02E02"]);
+  });
+});
+
 describe("queueSeriesInitialization + runQueuedSeriesInitialization", () => {
   it("queues once, runs the whole series, and dedupes repeat requests", async () => {
     const repository = new InMemoryWorkflowRepository();
