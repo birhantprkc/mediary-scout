@@ -702,7 +702,8 @@ async function acquireMissingEpisodes(input: {
       missingEpisodes: stillMissing,
       initialKeyword: input.keyword,
       failureEvidence,
-      searchResources: async ({ keyword }) => input.resourceProvider.search({ keyword }),
+      searchResources: async ({ keyword }) =>
+        input.resourceProvider.search({ keyword, workflowRunId: input.workflowRunId }),
     });
     // Content-hashing providers (PanSou) can return the SAME snapshot id for
     // identical result sets across searches; persist each id once.

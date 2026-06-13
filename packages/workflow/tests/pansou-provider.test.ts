@@ -139,6 +139,44 @@ describe("PanSouResourceProvider", () => {
     expect(a.id).not.toBe(b.id);
   });
 
+  it("run-scopes snapshot AND candidate ids so a re-acquisition does not collide", async () => {
+    // Same keyword, same results, two different runs: a content-hashing provider
+    // used to yield the SAME id, so the second run's snapshot was dropped on the
+    // global resource_snapshots primary key. The run id must namespace the ids.
+    const provider = new PanSouResourceProvider({
+      baseURL: "https://pansou.example",
+      now: () => "2026-06-11T00:00:00.000Z",
+      maxSearchAttempts: 1,
+      fetchJson: async () => ({
+        code: 0,
+        data: {
+          results: [
+            {
+              title: "奥本海默 2023 2160p",
+              channel: "telegram-a",
+              links: [{ type: "magnet", url: "magnet:?xt=urn:btih:" + "a".repeat(40) }],
+            },
+          ],
+        },
+      }),
+    });
+
+    const runA = await provider.search({ keyword: "奥本海默", workflowRunId: "run_a" });
+    const runB = await provider.search({ keyword: "奥本海默", workflowRunId: "run_b" });
+    const anon = await provider.search({ keyword: "奥本海默" });
+
+    // Different runs → different snapshot ids (and the run id is visible in them).
+    expect(runA.id).not.toBe(runB.id);
+    expect(runA.id).toContain("run_a");
+    expect(runB.id).toContain("run_b");
+    // Candidate ids inherit the run scope.
+    expect(runA.candidates[0]?.id).toContain("run_a");
+    expect(runA.candidates[0]?.id).not.toBe(runB.candidates[0]?.id);
+    // No run id → the legacy content-addressed form (back-compat for smoke/CLI).
+    expect(anon.id).not.toContain("run_a");
+    expect(anon.id.startsWith("pansou_")).toBe(true);
+  });
+
   it("polls until PanSou's streaming results stop growing, then uses the fullest set", async () => {
     // PanSou streams: call 1 returns a quick partial slice, later calls carry the
     // async-plugin links. The provider must judge the COMPLETE set, never 抢跑.

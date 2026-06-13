@@ -65,7 +65,7 @@ export class PanSouResourceProvider implements ResourceProvider {
     return isPanSouSuccessResponse(response) ? collectLinkFacts(response.data.results) : [];
   }
 
-  async search(input: { keyword: string }): Promise<ResourceSnapshot> {
+  async search(input: { keyword: string; workflowRunId?: string }): Promise<ResourceSnapshot> {
     // PanSou is async/streaming: the first call returns quick cached results and
     // async-plugin results land on LATER calls (5 → 35 115-links, 0 → 419
     // magnets). Poll until the link count stops growing so the agent always
@@ -88,7 +88,7 @@ export class PanSouResourceProvider implements ResourceProvider {
         await this.wait(this.searchPollMs);
       }
     }
-    const snapshotId = createSnapshotId(input.keyword, facts);
+    const snapshotId = createSnapshotId(input.keyword, facts, input.workflowRunId);
     const candidates: ResourceCandidate[] = facts.map((fact, index) => ({
       id: `${snapshotId}_candidate_${index + 1}`,
       snapshotId,
@@ -238,12 +238,13 @@ function extractQualityHints(text: string): string[] {
   return Array.from(hints);
 }
 
-function createSnapshotId(keyword: string, facts: PanSouLinkFact[]): string {
+function createSnapshotId(keyword: string, facts: PanSouLinkFact[], workflowRunId?: string): string {
   // The keyword is part of the top-level material (not only embedded per-fact),
   // so an EMPTY result set still yields a keyword-specific id. Otherwise every
   // empty search hashes the same `[]` → one shared id that collides across
   // keywords AND across runs (resource_snapshots.id is a global primary key).
   const material = JSON.stringify({
+    workflowRunId: workflowRunId ?? null,
     keyword,
     facts: facts.map((fact) => ({
       title: fact.title,
@@ -255,7 +256,10 @@ function createSnapshotId(keyword: string, facts: PanSouLinkFact[]): string {
       source: fact.source,
     })),
   });
-  return `pansou_${createHash("sha1").update(material).digest("hex").slice(0, 12)}`;
+  const hash = createHash("sha1").update(material).digest("hex").slice(0, 12);
+  // Run-scope the id so a re-acquisition with identical results gets its OWN
+  // snapshot row instead of colliding with the first run's on the global PK.
+  return workflowRunId ? `pansou_${workflowRunId}_${hash}` : `pansou_${hash}`;
 }
 
 function stringValue(value: unknown): string {

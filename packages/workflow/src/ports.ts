@@ -14,7 +14,14 @@ import type {
 } from "./package-normalizer.js";
 
 export interface ResourceProvider {
-  search(input: { keyword: string }): Promise<ResourceSnapshot>;
+  /**
+   * `workflowRunId`, when given, namespaces the returned snapshot/candidate ids
+   * to that run. Content-hashing providers (PanSou) otherwise yield the SAME id
+   * for identical results across runs, so a re-acquisition collides on the
+   * global resource_snapshots primary key and the second run's snapshot is lost
+   * — the same reason transfer-attempt ids are run-scoped.
+   */
+  search(input: { keyword: string; workflowRunId?: string }): Promise<ResourceSnapshot>;
 }
 
 /** A video file whose name exposes no episode identity — invisible to verification until rescued. */

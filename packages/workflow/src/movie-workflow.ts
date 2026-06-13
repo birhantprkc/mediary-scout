@@ -148,7 +148,7 @@ export async function runMovieAcquisition(input: {
       qualityPreference: "4K",
       initialKeyword: input.keyword,
       failureEvidence,
-      searchResources: async ({ keyword }) => input.resourceProvider.search({ keyword }),
+      searchResources: async ({ keyword }) => input.resourceProvider.search({ keyword, workflowRunId }),
     });
     for (const snapshot of planning.snapshots) {
       if (!resourceSnapshots.some((existing) => existing.id === snapshot.id)) {

@@ -52,6 +52,63 @@ describe("SQLiteWorkflowRepository", () => {
     expect(countRows(database, "notifications")).toBe(1);
   });
 
+  it("keeps each run's resource snapshot when the same title is re-acquired (run-scoped ids)", async () => {
+    database = new DatabaseSync(":memory:");
+    const repository = new SQLiteWorkflowRepository(database);
+
+    // Same title/season acquired twice. With content-addressed ids both runs
+    // shared one snapshot id, so the second run's INSERT OR IGNORE was dropped
+    // and its snapshot vanished (provenance gap). Run-scoped ids give each run
+    // its own row.
+    const runFixture = (runId: string, snapshotId: string) =>
+      workflowPersistenceFixture({
+        workflowRun: {
+          id: runId,
+          kind: "type2_init",
+          status: "succeeded",
+          trackedSeasonId: "season_1",
+          startedAt: "2026-06-11T00:00:00.000Z",
+          finishedAt: "2026-06-11T00:01:00.000Z",
+          auditEvents: [],
+        },
+        resourceSnapshots: [
+          {
+            id: snapshotId,
+            provider: "pansou",
+            keyword: "Show 4K",
+            createdAt: "2026-06-11T00:00:00.000Z",
+            candidates: [
+              {
+                id: `${snapshotId}_candidate_1`,
+                snapshotId,
+                index: 0,
+                title: "Show S01E01",
+                type: "115",
+                source: "pansou",
+                episodeHints: ["S01E01"],
+                qualityHints: ["4K"],
+                providerPayload: {},
+              },
+            ],
+          },
+        ],
+        decisions: [],
+        transferAttempts: [],
+        notifications: [],
+      });
+
+    await repository.saveWorkflowRunSnapshot(runFixture("run_a", "pansou_run_a_abc123"));
+    await repository.saveWorkflowRunSnapshot(runFixture("run_b", "pansou_run_b_abc123"));
+
+    const loadedA = await repository.getWorkflowRunSnapshot("run_a");
+    const loadedB = await repository.getWorkflowRunSnapshot("run_b");
+
+    // Both runs kept their own snapshot — the second did NOT clobber the first.
+    expect(loadedA?.resourceSnapshots[0]?.id).toBe("pansou_run_a_abc123");
+    expect(loadedB?.resourceSnapshots[0]?.id).toBe("pansou_run_b_abc123");
+    expect(countRows(database, "resource_snapshots")).toBe(2);
+  });
+
   it("keeps stored state isolated from caller mutations", async () => {
     database = new DatabaseSync(":memory:");
     const repository = new SQLiteWorkflowRepository(database);
