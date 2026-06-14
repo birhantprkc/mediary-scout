@@ -8,6 +8,14 @@ import { episodeCodeFromFileName } from "./episode-code.js";
 import type { PackageTreeFile } from "./package-normalizer.js";
 import type { StorageExecutor, UnparsedVideoFile } from "./ports.js";
 
+/**
+ * Depth bound for the recursive video collectors, matching listTree's default.
+ * Real media trees are shallow (Title/Season/files); a runaway-deep tree
+ * (corrupt/adversarial) must not fan out into uncounted listItems calls and
+ * trip 115 风控 — the walk stops here, same as listTree.
+ */
+const MAX_RECURSIVE_COLLECT_DEPTH = 6;
+
 const DEFAULT_VIDEO_EXTENSIONS = [
   ".mp4",
   ".mkv",
@@ -731,14 +739,21 @@ export class Storage115Executor implements StorageExecutor {
     return videos.some((video) => video.sizeBytes >= this.minVideoSizeBytes);
   }
 
-  private async collectVideos(rootDirectoryId: string, currentDirectoryId: string): Promise<VideoFact[]> {
+  private async collectVideos(
+    rootDirectoryId: string,
+    currentDirectoryId: string,
+    depth = 1,
+  ): Promise<VideoFact[]> {
+    if (depth > MAX_RECURSIVE_COLLECT_DEPTH) {
+      return [];
+    }
     const items = await this.callApi("listItems", () => this.api.listItems({ directoryId: currentDirectoryId }));
     const videos: VideoFact[] = [];
     for (const item of items) {
       if (isDirectory(item)) {
         const childDirectoryId = directoryIdFromItem(item);
         if (childDirectoryId) {
-          videos.push(...(await this.collectVideos(rootDirectoryId, childDirectoryId)));
+          videos.push(...(await this.collectVideos(rootDirectoryId, childDirectoryId, depth + 1)));
         }
         continue;
       }
@@ -755,14 +770,17 @@ export class Storage115Executor implements StorageExecutor {
     return videos;
   }
 
-  private async collectUnparsedVideos(directoryId: string): Promise<UnparsedVideoFile[]> {
+  private async collectUnparsedVideos(directoryId: string, depth = 1): Promise<UnparsedVideoFile[]> {
+    if (depth > MAX_RECURSIVE_COLLECT_DEPTH) {
+      return [];
+    }
     const items = await this.callApi("listItems", () => this.api.listItems({ directoryId }));
     const unparsed: UnparsedVideoFile[] = [];
     for (const item of items) {
       if (isDirectory(item)) {
         const childDirectoryId = directoryIdFromItem(item);
         if (childDirectoryId) {
-          unparsed.push(...(await this.collectUnparsedVideos(childDirectoryId)));
+          unparsed.push(...(await this.collectUnparsedVideos(childDirectoryId, depth + 1)));
         }
         continue;
       }

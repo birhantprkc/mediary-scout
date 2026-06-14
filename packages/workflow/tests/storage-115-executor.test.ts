@@ -475,6 +475,45 @@ describe("Storage115Executor", () => {
     );
   });
 
+  it("caps recursive video collection so a deep tree can't fan out unbounded listItems", async () => {
+    // A pathological chain deeper than the cap (6): a video sits beyond the
+    // limit and must NOT be collected, and the walk must NOT keep issuing
+    // listItems past it — otherwise a corrupt/adversarial tree could trip 风控.
+    const api = new FakePan115Api({
+      directories: {
+        deep_root: [
+          { fid: "v_shallow", n: "Show.S01E01.mkv", s: "1000000000" },
+          { cid: "lvl2", n: "L2", fc: "0" },
+        ],
+        lvl2: [{ cid: "lvl3", n: "L3", fc: "0" }],
+        lvl3: [{ cid: "lvl4", n: "L4", fc: "0" }],
+        lvl4: [{ cid: "lvl5", n: "L5", fc: "0" }],
+        lvl5: [{ cid: "lvl6", n: "L6", fc: "0" }],
+        lvl6: [{ cid: "lvl7", n: "L7", fc: "0" }],
+        lvl7: [{ fid: "v_deep", n: "Show.S01E09.mkv", s: "1000000000" }],
+      },
+      directoryInfo: {
+        deep_root: {
+          state: true,
+          path: [
+            { cid: "0", name: "root" },
+            { cid: "tv_root", name: "TV Shows" },
+            { cid: "deep_root", name: "Season 1" },
+          ],
+        },
+      },
+    });
+    const executor = new Storage115Executor({ api, protectedDirectoryIds: ["0", "tv_root"] });
+
+    const videos = await executor.listVideoFiles("deep_root");
+
+    // The shallow video is collected; the one beyond the depth cap is not.
+    expect(videos.map((video) => video.name)).toContain("Show.S01E01.mkv");
+    expect(videos.map((video) => video.name)).not.toContain("Show.S01E09.mkv");
+    // The walk stopped at the cap — it never listed the directory past it.
+    expect(api.listCalls).not.toContain("lvl7");
+  });
+
   it("moves nested videos to a safe season leaf and removes empty child folders", async () => {
     const api = new FakePan115Api({
       directories: {
