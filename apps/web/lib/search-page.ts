@@ -7,12 +7,12 @@ import {
 } from "@media-track/workflow";
 import { dashboardStateFromTrackedSeason, type DashboardState } from "./demo-workflow";
 import { demoMediaSearchProvider } from "./demo-candidates";
-import { SqliteMediaSearchCache } from "./tmdb-cache";
+import { PostgresMediaSearchCache } from "./tmdb-cache";
 import {
   ensureDemoSeeded,
-  getWebDatabase,
   getWorkflowRepository,
   getWorkflowStatusView,
+  postgresConnectionString,
 } from "./workflow-runtime";
 
 export interface ProductPageData {
@@ -21,7 +21,7 @@ export interface ProductPageData {
 }
 
 let demoSearchCache: InMemoryMediaSearchCache | null = null;
-let durableSearchCache: SqliteMediaSearchCache | null = null;
+let durableSearchCache: PostgresMediaSearchCache | null = null;
 let tmdbSearchProvider: MediaSearchProvider | null = null;
 
 export async function getProductPageData(query: string): Promise<ProductPageData> {
@@ -114,7 +114,7 @@ function getSearchCache() {
   // Live TMDB searches are cached durably in SQLite (6h TTL) so casual
   // browsing never becomes an API storm; the demo provider stays in-memory.
   if (process.env.MEDIA_TRACK_SEARCH_PROVIDER === "tmdb") {
-    durableSearchCache ??= new SqliteMediaSearchCache(getWebDatabase());
+    durableSearchCache ??= new PostgresMediaSearchCache({ connectionString: postgresConnectionString() });
     return durableSearchCache;
   }
   demoSearchCache ??= new InMemoryMediaSearchCache();

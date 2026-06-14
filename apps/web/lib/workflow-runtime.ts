@@ -1,4 +1,3 @@
-import { DatabaseSync } from "node:sqlite";
 import {
   createPanSouResourceProviderFromEnv,
   createProtectedPan115CookieStorageExecutorFromEnv,
@@ -25,7 +24,6 @@ import {
   runQueuedType2Workflow,
   runScheduledType3Monitoring,
   sendPushNotifications,
-  SQLiteWorkflowRepository,
   createPostgresWorkflowRepositorySync,
   type AgentNodes,
   type MediaSearchCandidate,
@@ -53,7 +51,6 @@ export type CandidateTrackingRequestResult =
       message: string;
     };
 
-let database: DatabaseSync | null = null;
 let repository: WorkflowRepository | null = null;
 let demoSeedPromise: Promise<void> | null = null;
 let fakeResourceProvider: ResourceProvider | null = null;
@@ -62,19 +59,19 @@ let agentNodes:
   | { adapter: "fake" | "vercel-ai"; preferredLanguage: string | undefined; nodes: AgentNodes }
   | null = null;
 
-export function getWebDatabase(): DatabaseSync {
-  if (!database) {
-    database = new DatabaseSync(webDatabasePath());
+/** The Postgres connection string for durable dev/prod state. SQLite has been
+ *  retired — dev runs on OrbStack Postgres. */
+export function postgresConnectionString(): string {
+  const url = process.env.MEDIA_TRACK_POSTGRES_URL?.trim();
+  if (!url) {
+    throw new Error("MEDIA_TRACK_POSTGRES_URL is required (the SQLite dev DB has been retired)");
   }
-  return database;
+  return url;
 }
 
 export function getWorkflowRepository(): WorkflowRepository {
   if (!repository) {
-    const postgresUrl = process.env.MEDIA_TRACK_POSTGRES_URL?.trim();
-    repository = postgresUrl
-      ? createPostgresWorkflowRepositorySync({ connectionString: postgresUrl })
-      : new SQLiteWorkflowRepository(getWebDatabase());
+    repository = createPostgresWorkflowRepositorySync({ connectionString: postgresConnectionString() });
   }
   return repository;
 }
@@ -674,10 +671,6 @@ function animeParentDirectoryId(): string {
 
 function defaultQuality(): string {
   return process.env.MEDIA_TRACK_DEFAULT_QUALITY ?? "4K";
-}
-
-function webDatabasePath(): string {
-  return process.env.MEDIA_TRACK_WEB_DB_PATH ?? ".media-track-web.sqlite";
 }
 
 export interface ForeignWorkFinding {
