@@ -92,6 +92,7 @@ async function SearchResults({ query }: { query: string }) {
   // finishes, with no manual refresh. (Previously only the library mounted it,
   // so a result acquired from search stayed stuck on 已请求.)
   const inProgress = await getInProgressTitles();
+  const inProgressIds = new Set(inProgress.map((title) => title.tmdbId));
 
   return (
     <>
@@ -118,6 +119,7 @@ async function SearchResults({ query }: { query: string }) {
               {searchView.candidates.map((candidate) => (
                 <CandidateCard
                   candidate={candidate}
+                  acquiring={inProgressIds.has(candidate.tmdbId)}
                   trackedLabel={
                     // The per-season summary ("第 N 季已获取/追更中") is a TV concept.
                     // A movie has no seasons — let it fall through to its own
@@ -190,10 +192,14 @@ function trackedSummaryLabel(states: TrackedSeasonState[], totalSeasonCount: num
 
 function CandidateCard({
   candidate,
+  acquiring,
   trackedLabel,
   trackedSeasonNumbers,
 }: {
   candidate: SearchCandidateCard;
+  /** This title has a queued/running acquisition — show 获取中, not its
+   *  (possibly "有缺集") tracked snapshot, which is misleading mid-acquisition. */
+  acquiring: boolean;
   trackedLabel: string | null;
   trackedSeasonNumbers: number[];
 }) {
@@ -224,7 +230,13 @@ function CandidateCard({
             </p>
           </div>
           <div className="candidate-actions">
-            {isTv && untrackedSeasons.length > 0 ? (
+            {acquiring ? (
+              <span className="hub-badge tone-green" title="后台正在获取">
+                <LoaderCircle size={12} className="spin" aria-hidden />
+                获取中
+              </span>
+            ) : null}
+            {!acquiring && isTv && untrackedSeasons.length > 0 ? (
               <SeasonRequestMenu
                 tmdbId={candidate.tmdbId}
                 seasonNumbers={untrackedSeasons}
@@ -237,12 +249,12 @@ function CandidateCard({
             {/* The clickable title is the detail entry already. Only surface an
                 explicit 查看详情 when the show is FULLY tracked (no 获取 action
                 left) — never crammed next to a 获取 button. */}
-            {isTv && trackedLabel !== null && untrackedSeasons.length === 0 ? (
+            {!acquiring && isTv && trackedLabel !== null && untrackedSeasons.length === 0 ? (
               <Link className="primary-button" href={`/show/${candidate.tmdbId}?from=search`}>
                 查看详情
               </Link>
             ) : null}
-            {!isTv && trackedLabel === null ? (
+            {!acquiring && !isTv && trackedLabel === null ? (
               <RequestTrackButton
                 candidateId={candidate.id}
                 actionState={candidate.action.state}
@@ -259,7 +271,7 @@ function CandidateCard({
           {isTv && candidate.seasonNumbers.length > 0 ? (
             <span>共 {candidate.seasonNumbers.length} 季</span>
           ) : null}
-          {trackedLabel !== null ? (
+          {!acquiring && trackedLabel !== null ? (
             <span className="hub-badge tone-green">{trackedLabel}</span>
           ) : null}
         </div>
