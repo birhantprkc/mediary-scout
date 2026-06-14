@@ -42,3 +42,4 @@ export * from "./acquisition-v2/candidate-registry.js";
 export * from "./acquisition-v2/real-provider-adapter.js";
 export * from "./acquisition-v2/real-storage-adapter.js";
 export * from "./acquisition-v2/orchestrator.js";
+export * from "./acquisition-v2/directory-lifecycle.js";
