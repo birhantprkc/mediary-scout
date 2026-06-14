@@ -87,8 +87,15 @@ async function SearchResults({ query }: { query: string }) {
     trackedByTmdbId.set(state.title.tmdbId, list);
   }
 
+  // Search results auto-update like the library: while ANY acquisition is in
+  // flight, mount the poller so the card flips 已请求 → 已获取 the moment the run
+  // finishes, with no manual refresh. (Previously only the library mounted it,
+  // so a result acquired from search stayed stuck on 已请求.)
+  const inProgress = await getInProgressTitles();
+
   return (
     <>
+      {inProgress.length > 0 ? <AcquiringPoller /> : null}
       {searchView.state === "empty" ? (
         <div className="quiet-state">
           <Search size={24} aria-hidden />

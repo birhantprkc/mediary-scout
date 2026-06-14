@@ -2,6 +2,7 @@
 
 import { Check, LoaderCircle, Plus } from "lucide-react";
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { requestTrackingAction, type RequestTrackingActionResult } from "../app/actions";
 import type { SearchActionState } from "@media-track/workflow";
 import { RequestedBadge } from "./request-state";
@@ -25,20 +26,24 @@ export function RequestTrackButton({
   label?: string;
   disabled?: boolean;
 }) {
+  const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [result, setResult] = useState<RequestTrackingActionResult | null>(null);
 
-  // SERVER truth wins over a stale client result: once the server reports the
-  // run finished (already_tracked / disabled), the optimistic "已请求" from the
-  // click must release — otherwise the AcquiringPoller's refresh updates
+  // Once the SERVER reports the run finished (already_tracked), the optimistic
+  // "已请求" from the click must release — otherwise the AcquiringPoller refreshes
   // actionState but the button stays stuck on "已请求" until a manual reload.
-  const serverSettled = disabled || actionState === "already_tracked";
+  // NOTE: only already_tracked counts as done — active_workflow also sets
+  // `disabled`, so we must NOT treat disabled as settled or an in-flight run
+  // would wrongly show the green "done" badge.
   const inProgress =
-    !serverSettled &&
+    actionState !== "already_tracked" &&
     (result?.status === "requested" ||
       result?.status === "active_workflow" ||
       actionState === "active_workflow");
-  const settled = serverSettled || (!inProgress && result?.status === "already_tracked");
+  const settled =
+    !inProgress &&
+    (disabled || actionState === "already_tracked" || result?.status === "already_tracked");
 
   if (inProgress) {
     return <RequestedBadge title={result?.message} />;
@@ -67,6 +72,9 @@ export function RequestTrackButton({
                 currentState: actionState,
               }),
             );
+            // Re-fetch so the now-queued run mounts the AcquiringPoller, which
+            // then flips this card to 已获取 when the run finishes.
+            router.refresh();
           });
         }}
       >

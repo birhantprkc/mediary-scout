@@ -2,6 +2,7 @@
 
 import { Check, ChevronDown, LoaderCircle, Plus } from "lucide-react";
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   requestRemainingAction,
   requestSeasonAction,
@@ -32,6 +33,7 @@ export function SeasonRequestMenu({
   /** Pill label for the all-remaining scope. */
   allLabel?: string;
 }) {
+  const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<number | "all">("all");
@@ -49,6 +51,9 @@ export function SeasonRequestMenu({
           ? await requestRemainingAction({ tmdbId })
           : await requestSeasonAction({ tmdbId, seasonNumber: selected }),
       );
+      // Re-fetch so the queued run mounts the AcquiringPoller; once it finishes,
+      // the acquired season leaves untrackedSeasons and this menu unmounts.
+      router.refresh();
     });
   };
 
@@ -66,6 +71,7 @@ export function SeasonRequestMenu({
         onClick={() => {
           startTransition(async () => {
             setResult(await requestSeasonAction({ tmdbId, seasonNumber: onlySeason }));
+            router.refresh();
           });
         }}
       >
