@@ -10,6 +10,7 @@ export * from "./workflow.js";
 export * from "./plan-validation.js";
 export * from "./acquisition-planning-smoke.js";
 export * from "./dedup.js";
+export * from "./episode-code.js";
 export * from "./package-init.js";
 export * from "./repository.js";
 export * from "./sqlite.js";

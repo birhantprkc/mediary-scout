@@ -6,7 +6,9 @@
  * code in the name — see the rename step in staging normalization.
  */
 export function episodeCodeFromFileName(name: string): string | null {
-  const seasonEpisodeMatch = /[Ss](\d{1,2})[Ee](\d{1,3})/.exec(name);
+  // Episode allows up to 4 digits for 1000+ episode anime (One Piece/柯南/蜡笔小新);
+  // \d{1,3} truncated "E1050" → "E105".
+  const seasonEpisodeMatch = /[Ss](\d{1,2})[Ee](\d{1,4})/.exec(name);
   if (seasonEpisodeMatch?.[1] && seasonEpisodeMatch[2]) {
     return `S${seasonEpisodeMatch[1].padStart(2, "0")}E${seasonEpisodeMatch[2].padStart(2, "0")}`;
   }
@@ -14,7 +16,7 @@ export function episodeCodeFromFileName(name: string): string | null {
   // Name-only heuristic: a bare "第N集" cannot reveal its season, so this
   // reading is only trustworthy for season 1. Files like these landing in
   // other seasons are exactly what the canonical rename step eliminates.
-  const chineseEpisodeMatch = /第\s*(\d{1,3})\s*集/.exec(name);
+  const chineseEpisodeMatch = /第\s*(\d{1,4})\s*集/.exec(name);
   if (chineseEpisodeMatch?.[1]) {
     return `S01E${chineseEpisodeMatch[1].padStart(2, "0")}`;
   }
