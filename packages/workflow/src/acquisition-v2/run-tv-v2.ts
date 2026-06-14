@@ -1,0 +1,72 @@
+import type { LanguageModel } from "ai";
+import type { MediaTitle } from "../domain.js";
+import type { ResourceProvider, StorageExecutor } from "../ports.js";
+import {
+  bridgeV2WorkflowToResult,
+  type BridgedV2Result,
+  type V2BridgeMode,
+  type V2BridgeSeasonIntent,
+} from "./workflow-v2-bridge.js";
+import { runAcquisitionV2Workflow } from "./workflow-v2.js";
+
+function defaultNowIso(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * Phase 7d — the single TV/anime acquisition entry on the V2 engine. type2 init,
+ * series init, and type3 patrol are all the SAME resource-sync workflow
+ * (verify-or-create dirs → sync need → strong agent → reconcile); they differ
+ * only in the notification framing, captured by `mode`. Returns the bridged
+ * per-season WorkflowResult facts; persistence is the runner's job.
+ */
+export interface RunTvAcquisitionV2Request {
+  title: MediaTitle;
+  mode: V2BridgeMode;
+  seasons: V2BridgeSeasonIntent[];
+  /** Library category parent (Movies/TV/Anime), chosen by title.type upstream. */
+  categoryParentId: string;
+  resourceProvider: ResourceProvider;
+  storage: StorageExecutor;
+  model: LanguageModel;
+  workflowRunId: string;
+  searchBudget?: number;
+  maxSteps?: number;
+  preferredLanguage?: string;
+  now?: () => string;
+}
+
+export async function runTvAcquisitionV2(request: RunTvAcquisitionV2Request): Promise<BridgedV2Result> {
+  if (request.seasons.length === 0) {
+    throw new Error("runTvAcquisitionV2 requires at least one season in scope");
+  }
+  const v2 = await runAcquisitionV2Workflow({
+    provider: request.resourceProvider,
+    executor: request.storage,
+    model: request.model,
+    workflowRunId: request.workflowRunId,
+    title: {
+      name: request.title.title,
+      year: request.title.year ?? 0,
+      aliases: request.title.aliases ?? [],
+    },
+    categoryParentId: request.categoryParentId,
+    seasons: request.seasons.map((season) => ({
+      seasonNumber: season.seasonNumber,
+      latestAiredEpisode: season.latestAiredEpisode,
+    })),
+    qualityPreference: request.seasons[0]!.qualityPreference,
+    ...(request.searchBudget === undefined ? {} : { searchBudget: request.searchBudget }),
+    ...(request.maxSteps === undefined ? {} : { maxSteps: request.maxSteps }),
+    ...(request.preferredLanguage === undefined ? {} : { preferredLanguage: request.preferredLanguage }),
+  });
+
+  return bridgeV2WorkflowToResult({
+    title: request.title,
+    mode: request.mode,
+    seasons: request.seasons,
+    v2,
+    workflowRunId: request.workflowRunId,
+    now: request.now ?? defaultNowIso,
+  });
+}
