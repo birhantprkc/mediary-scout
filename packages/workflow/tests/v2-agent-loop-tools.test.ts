@@ -39,11 +39,24 @@ describe("buildSandboxToolSet — the agent's tool surface over the cage", () =>
         "inspectTargetDir",
         "markObtained",
         "moveToSeason",
+        "readSkill",
         "reportNoCoverage",
         "searchResources",
         "transferCandidate",
       ].sort(),
     );
+  });
+
+  it("readSkill returns the requested manual section on demand (progressive disclosure)", async () => {
+    const { sandbox } = await setup();
+    const tools = buildSandboxToolSet(sandbox);
+
+    const movie = (await call(tools.readSkill, { section: "movie" })) as unknown as { section: string; body: string };
+    expect(movie.section).toBe("movie");
+    expect(movie.body).toMatch(/Movie acquisition playbook/);
+
+    const unknown = (await call(tools.readSkill, { section: "nope" })) as unknown as { body: string };
+    expect(unknown.body).toMatch(/Unknown skill section/); // recoverable, not a crash
   });
 
   it("drives the sandbox: search → transfer returns forced-reread evidence", async () => {

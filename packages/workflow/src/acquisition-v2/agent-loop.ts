@@ -1,6 +1,7 @@
 import { generateText, stepCountIs, type LanguageModel, type ToolSet } from "ai";
 import { z } from "zod";
 import type { TaskSandbox } from "./sandbox.js";
+import { readSkillSection } from "./skill.js";
 
 /**
  * Phase 3 — the agent loop harness. The strong agent drives its own
@@ -20,10 +21,44 @@ async function asEvidence(run: () => Promise<unknown>): Promise<unknown> {
   }
 }
 
+/**
+ * Opt-in observability (MEDIA_TRACK_AGENT_LOG=1): log every sandbox tool call the
+ * agent makes — the keyword it searches, the candidate it transfers, what it
+ * moves/marks, and the evidence that comes back. Off by default (silent in
+ * tests); turned on for live e2e so the agent loop is not a black box.
+ */
+function wrapWithLogging(tools: ToolSet): ToolSet {
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, tool] of Object.entries(tools)) {
+    const execute = (tool as { execute: (args: unknown, options: unknown) => Promise<unknown> }).execute;
+    wrapped[name] = {
+      ...(tool as object),
+      execute: async (args: unknown, options: unknown) => {
+        const argStr =
+          args && typeof args === "object" && Object.keys(args).length > 0
+            ? ` ${JSON.stringify(args).slice(0, 240)}`
+            : "";
+        console.log(`[agent] → ${name}${argStr}`);
+        const result = await execute(args, options);
+        console.log(`[agent] ← ${name}: ${JSON.stringify(result).slice(0, 400)}`);
+        return result;
+      },
+    };
+  }
+  return wrapped as ToolSet;
+}
+
 /** Build the AI SDK ToolSet that exposes the sandbox to the model. Each tool's
  *  execute drives the sandbox and returns its (already reread) evidence. */
 export function buildSandboxToolSet(sandbox: TaskSandbox): ToolSet {
   const tools = {
+    readSkill: {
+      description:
+        "Read a section of your domain skill manual ON DEMAND — the hard-won playbook for HOW to act. Sections: protocol, dead-links-black-box, dedup, movie, tv, mistakes. Read your sections before you act, and re-read the relevant one the moment its situation arises. Acting from memory instead of the skill is how the old agent hammered 115 and corrupted libraries.",
+      inputSchema: z.object({ section: z.string() }),
+      execute: (args: { section: string }) =>
+        Promise.resolve({ section: args.section, body: readSkillSection(args.section) }),
+    },
     searchResources: {
       description:
         "Search the resource provider with ONE keyword. Read-only. Returns the full snapshot of candidates (no slicing). Repeats are deduped; the search budget is capped — decide from gathered evidence when refused.",
@@ -95,7 +130,7 @@ export function buildSandboxToolSet(sandbox: TaskSandbox): ToolSet {
       execute: (args: { reason: string }) => asEvidence(() => sandbox.reportNoCoverage(args.reason)),
     },
   } satisfies ToolSet;
-  return tools;
+  return process.env.MEDIA_TRACK_AGENT_LOG === "1" ? wrapWithLogging(tools) : tools;
 }
 
 export interface AcquisitionAgentRequest {

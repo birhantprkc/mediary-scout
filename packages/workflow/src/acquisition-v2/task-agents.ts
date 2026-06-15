@@ -1,6 +1,20 @@
 import type { LanguageModel } from "ai";
 import { runAcquisitionAgent, type AcquisitionAgentResult } from "./agent-loop.js";
 import type { TaskSandbox } from "./sandbox.js";
+import { skillIndexForAgent } from "./skill.js";
+
+/**
+ * The 字字泣血 mandate: the agent MUST read its skill manual before acting and
+ * re-read it during the loop. The static prompt is the SHAPE; the skill (read on
+ * demand via readSkill) is the DEPTH and the worked right/wrong examples. Written
+ * like the original skill's "FIRST ACTIONS (MANDATORY)" — not optional, with the
+ * disasters spelled out as the WHY.
+ */
+function skillMandate(agent: "movie" | "tv"): string {
+  return `⛔ MANDATORY — before ANY reasoning or tool call, read your skill; re-read it DURING the loop. It is NOT optional.
+${skillIndexForAgent(agent)}
+Acting before you have read it — or reaching a transfer/move/delete/mark without having re-read the section that governs it — makes you the old mechanical transferrer: it searched 16 times, hammered 115 into a rate-limit (the 逆鳞), transferred 6 overlapping full-season packs, deleted the LARGER/better files, and left libraries corrupted. DO NOT be that agent. The skill is the source of truth for HOW to act; skipping the governing section before a side effect is task failure.`;
+}
 
 /**
  * Phase 4/5 — the two strong task agents. Semantic ownership belongs to TWO
@@ -47,6 +61,8 @@ function languageLine(options: TaskAgentPromptOptions): string {
 export function buildTvAnimeSystemPrompt(options: TaskAgentPromptOptions): string {
   return `${SANDBOX_BOUNDARY}
 
+${skillMandate("tv")}
+
 You own the COMPLETE acquisition judgment for one OR MORE seasons of a TV/anime title in scope: keyword strategy, target matching, season/episode coverage, package recognition + normalization, provider-ahead reasoning, staging→season extraction, residue classification, same-episode dedup grouping, and marking. It is ONE deliberation, not separate filters. The need is simply "应有 vs 实有 = which episodes are still missing"; it may span several seasons.
 
 Target matching:
@@ -69,6 +85,8 @@ ${LOOP_GUIDANCE}`;
 
 export function buildMovieSystemPrompt(options: TaskAgentPromptOptions): string {
   return `${SANDBOX_BOUNDARY}
+
+${skillMandate("movie")}
 
 You own the COMPLETE acquisition judgment for ONE movie: target正片 identification (guard against remakes/wrong films — cross-check BOTH title AND year), main-file selection, quality tradeoff, rejection of extras/trailers/foreign works, import cleanup, and marking. A movie is a SINGLE video file — there are no seasons or episodes; its one synthetic coverage token is "MOVIE".
 

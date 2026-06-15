@@ -74,6 +74,25 @@ describe("TV/anime system prompt carries the 字字泣血 invariants", () => {
   });
 });
 
+describe("both prompts forcefully mandate reading the skill manual", () => {
+  it.each([
+    ["movie", buildMovieSystemPrompt({})],
+    ["tv", buildTvAnimeSystemPrompt({})],
+  ])("%s prompt: MANDATORY read of readSkill, its own section, re-read in loop, the disaster as the why", (agent, prompt) => {
+    expect(prompt).toMatch(/readSkill/);
+    expect(prompt).toMatch(/MANDATORY/);
+    expect(prompt).toMatch(new RegExp(`"${agent}"`)); // pointed at its own playbook section, by quoted name
+    expect(prompt).toMatch(/"protocol"/); // and the shared method section
+    expect(prompt).toMatch(/re-?read|DURING the loop/i); // read again while working, not just at start
+    expect(prompt).toMatch(/逆鳞|hammered 115|corrupted|DO NOT be that agent/); // 字字泣血 — the disaster as the why
+  });
+
+  it("the movie prompt does NOT hand the agent the tv playbook section, and vice versa", () => {
+    expect(buildMovieSystemPrompt({})).not.toMatch(/"tv"/);
+    expect(buildTvAnimeSystemPrompt({})).not.toMatch(/"movie"/);
+  });
+});
+
 describe("Movie system prompt carries movie-specific invariants", () => {
   const prompt = buildMovieSystemPrompt({});
   it.each([
