@@ -16,9 +16,12 @@ import {
   type LibraryWallStateValue,
   type TitleAggregateState,
 } from "./title-aggregate";
+import { PostgresMediaSearchCache } from "./tmdb-cache";
 import {
   ensureDemoSeeded,
   getWorkflowRepository,
+  movieTargetFromTmdbId,
+  postgresConnectionString,
   queueCandidateTracking,
   type CandidateTrackingRequestResult,
 } from "./workflow-runtime";
@@ -73,7 +76,17 @@ export interface MovieHubView {
 export type DetailView = TitleHubView | MovieHubView;
 
 const SERIES_TARGET_TTL_MS = 6 * 60 * 60 * 1000;
+// L1: per-process in-memory cache (fast, but resets on every restart — which is
+// why a cold detail-page load paid a live TMDB round-trip every dev restart).
 const seriesTargetCache = new Map<number, { value: PreparedSeriesTarget; expiresAt: number }>();
+// L2: durable Postgres cache, so the season list + artwork survive restarts and
+// the page renders from the DB instead of re-hitting TMDB on every cold load.
+let durableTargetCache: PostgresMediaSearchCache | null = null;
+function getDurableTargetCache(): PostgresMediaSearchCache {
+  return (durableTargetCache ??= new PostgresMediaSearchCache({
+    connectionString: postgresConnectionString(),
+  }));
+}
 
 /**
  * Season metadata + artwork for a title, independent of tracking state.
@@ -86,6 +99,13 @@ async function seriesTargetFor(tmdbId: number): Promise<PreparedSeriesTarget | n
     if (cached && cached.expiresAt > Date.now()) {
       return cached.value;
     }
+    const durable = getDurableTargetCache();
+    const fromDb = await durable.getJson<PreparedSeriesTarget>(`series-target:${tmdbId}`);
+    if (fromDb) {
+      // DB hit — warm L1 and skip the TMDB round-trip (this is the cold-load fix).
+      seriesTargetCache.set(tmdbId, { value: fromDb, expiresAt: Date.now() + SERIES_TARGET_TTL_MS });
+      return fromDb;
+    }
     try {
       const value = await prepareSeriesTarget({
         tmdbId,
@@ -93,6 +113,7 @@ async function seriesTargetFor(tmdbId: number): Promise<PreparedSeriesTarget | n
         metadataProvider: createTmdbMetadataProviderFromEnv(),
       });
       seriesTargetCache.set(tmdbId, { value, expiresAt: Date.now() + SERIES_TARGET_TTL_MS });
+      await durable.setJson(`series-target:${tmdbId}`, value, SERIES_TARGET_TTL_MS);
       return value;
     } catch {
       return seriesTargetCache.get(tmdbId)?.value ?? null;

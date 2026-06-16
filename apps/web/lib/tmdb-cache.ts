@@ -57,13 +57,41 @@ export class PostgresMediaSearchCache implements MediaSearchCache {
   }
 
   async set(query: string, candidates: MediaSearchCandidate[]): Promise<void> {
+    await this.setJson(normalizeKey(query), candidates);
+  }
+
+  /**
+   * Generic durable JSON cache over the same table — used by the title page to
+   * persist a TMDB series target (season list + artwork) across restarts, so the
+   * detail page renders from Postgres instead of paying a live TMDB round-trip on
+   * every cold (per-process) load. Key is namespaced by the caller (e.g.
+   * "series-target:1396") and stored verbatim (not query-normalized).
+   */
+  async getJson<T>(key: string): Promise<T | null> {
     await this.ensureSchema();
-    const expiresAt = new Date(Date.now() + this.ttlMs);
+    const result = await this.pool.query<{ payload: T; expires_at: Date }>(
+      "SELECT payload, expires_at FROM tmdb_search_cache WHERE cache_key = $1",
+      [key],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+    if (new Date(row.expires_at).getTime() <= Date.now()) {
+      await this.pool.query("DELETE FROM tmdb_search_cache WHERE cache_key = $1 AND expires_at <= now()", [key]);
+      return null;
+    }
+    return row.payload;
+  }
+
+  async setJson(key: string, value: unknown, ttlMs?: number): Promise<void> {
+    await this.ensureSchema();
+    const expiresAt = new Date(Date.now() + (ttlMs ?? this.ttlMs));
     await this.pool.query(
       `INSERT INTO tmdb_search_cache (cache_key, payload, expires_at)
        VALUES ($1, $2::jsonb, $3)
        ON CONFLICT (cache_key) DO UPDATE SET payload = EXCLUDED.payload, expires_at = EXCLUDED.expires_at`,
-      [normalizeKey(query), JSON.stringify(candidates), expiresAt],
+      [key, JSON.stringify(value), expiresAt],
     );
     await this.sweepExpiredOccasionally();
   }
