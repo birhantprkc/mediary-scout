@@ -52,7 +52,10 @@ export default async function ShowPage({
           label={from === "search" ? "返回搜索" : from === "library" ? "返回媒体库" : "返回"}
           fallbackHref={from === "library" ? "/?tab=library" : "/?tab=search"}
         />
-        <Suspense fallback={<HubSkeleton />}>
+        {/* No skeleton fallback: the sidebar + back link render instantly and the
+            hub content streams into place (~0.1s when cached). The detail page
+            never flashes skeleton bars — cold or on re-entry. */}
+        <Suspense fallback={null}>
           <TitleHub params={params} />
         </Suspense>
       </main>
@@ -245,7 +248,6 @@ function SeasonRow({
           <>
             <span className="seg-aired" style={{ width: `${airedPct}%` }} />
             <span className="seg-obtained" style={{ width: `${obtainedPct}%` }} />
-            {aired < total ? <span className="seg-marker" style={{ left: `${airedPct}%` }} /> : null}
           </>
         ) : null}
       </span>
@@ -299,13 +301,3 @@ function SeasonRow({
   );
 }
 
-function HubSkeleton() {
-  return (
-    <section className="title-hub">
-      <div className="skeleton skeleton-stage" />
-      <div className="skeleton skeleton-heading" />
-      <div className="skeleton skeleton-metric" />
-      <div className="skeleton skeleton-metric" />
-    </section>
-  );
-}

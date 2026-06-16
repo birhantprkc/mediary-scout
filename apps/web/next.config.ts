@@ -32,6 +32,14 @@ const nextConfig: NextConfig = {
   // Cache Components: PPR becomes the default rendering model. "use cache"
   // builds the static shell; runtime reads live inside Suspense holes.
   cacheComponents: true,
+  // Keep a visited route (and its loading boundary) reusable in the client Router
+  // Cache for a window, so re-entering a detail page you just opened doesn't
+  // re-fetch the dynamic hole and flash a skeleton every time. Fresh data still
+  // arrives after the window / on a real change (the AcquiringPoller refreshes
+  // mid-acquisition regardless).
+  experimental: {
+    staleTimes: { dynamic: 60, static: 300 },
+  },
 };
 
 export default nextConfig;

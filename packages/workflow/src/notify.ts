@@ -50,11 +50,12 @@ export function buildNotifyMessage(
 
   const md: string[] = [];
   if (imageUrl) {
-    // Half-width <img>, not ![](): Server酱 renders bare markdown images at the
-    // full container width, which overflowed the phone screen. Every channel
-    // already shows `head` as its own title field, so the body must NOT repeat
-    // it as a markdown heading (that rendered a duplicate title under the poster).
-    md.push(`<img src="${imageUrl}" width="50%" />`, "");
+    // Markdown image, not raw <img>: Server酱 renders ![]() but shows an HTML <img>
+    // tag as literal text (verified), so the poster must use markdown. Width is the
+    // channel's call (Server酱 fits it to container width) — not settable here.
+    // The head is NOT repeated as a markdown heading: every channel already shows
+    // it as its own title field, and a repeat rendered a duplicate title.
+    md.push(`![](${imageUrl})`, "");
   }
   for (const line of report.lines) {
     md.push(`- ${line}`);
