@@ -2,6 +2,11 @@ import { generateText, stepCountIs, type LanguageModel, type ToolSet } from "ai"
 import { z } from "zod";
 import type { TaskSandbox } from "./sandbox.js";
 import { readSkillSection } from "./skill.js";
+import {
+  DEFAULT_MAX_STEPS,
+  buildRepetitionStop,
+  reflectionSystemOverride,
+} from "./agent-loop-guards.js";
 
 /**
  * Phase 3 — the agent loop harness. The strong agent drives its own
@@ -173,16 +178,33 @@ export async function runAcquisitionAgent(
   request: AcquisitionAgentRequest,
 ): Promise<AcquisitionAgentResult> {
   const tools = buildSandboxToolSet(request.sandbox, { movie: request.movie ?? false });
+  const maxSteps = request.maxSteps ?? DEFAULT_MAX_STEPS;
   const result = await generateText({
     model: request.model,
     system: request.system,
     prompt: request.prompt,
     tools,
-    stopWhen: stepCountIs(request.maxSteps ?? 40),
+    // Two ceilings: a step cap (cost/runaway) AND an OpenHands-style repetition
+    // stop (the real "agent went crazy" signal). Either ends the loop.
+    stopWhen: [stepCountIs(maxSteps), buildRepetitionStop()],
+    // Last ~10 steps before the cap: inject a calm "wrap up + clean staging" nudge
+    // so a step-capped run doesn't leave the 一人之下-style half-done mess.
+    prepareStep: ({ stepNumber }) => {
+      const system = reflectionSystemOverride({ stepNumber, maxSteps, baseSystem: request.system });
+      return system ? { system } : undefined;
+    },
   });
+  const steps = result.steps?.length ?? 0;
+  if (process.env.MEDIA_TRACK_AGENT_LOG === "1") {
+    const total = result.totalUsage?.totalTokens;
+    const perStep = total ? ` ~${Math.round(total / Math.max(steps, 1))}/step` : "";
+    console.log(
+      `[agent] loop done: steps=${steps} tokens=${total ?? "n/a"}${perStep} finish=${result.finishReason}`,
+    );
+  }
   return {
     text: result.text,
-    steps: result.steps?.length ?? 0,
+    steps,
     coverage: await request.sandbox.finish(),
   };
 }
