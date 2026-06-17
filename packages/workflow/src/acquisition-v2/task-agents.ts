@@ -53,6 +53,9 @@ export interface TaskAgentPromptOptions {
   preferredLanguage?: string;
   /** This title's per-media-type keyword recipe (from searchProfile/getSearchRecipe). */
   searchHints?: string;
+  /** Rendered quality-preference guidance (召回后选片优先级, from getQualityGuidance);
+   *  "" / undefined = 不限 → no quality block injected. */
+  qualityGuidance?: string;
 }
 
 function languageLine(options: TaskAgentPromptOptions): string {
@@ -65,6 +68,12 @@ function searchHintsBlock(options: TaskAgentPromptOptions): string {
   return options.searchHints === undefined || options.searchHints === ""
     ? ""
     : `\nSEARCH STRATEGY (this title — PanSou keyword recipe; the skill's "search" section is the full map):\n${options.searchHints}\n`;
+}
+
+function qualityGuidanceBlock(options: TaskAgentPromptOptions): string {
+  return options.qualityGuidance === undefined || options.qualityGuidance === ""
+    ? ""
+    : `\nQUALITY PREFERENCE (召回后选片优先级,不影响搜索词):\n${options.qualityGuidance}\n`;
 }
 
 export function buildTvAnimeSystemPrompt(options: TaskAgentPromptOptions): string {
@@ -91,6 +100,7 @@ Dead links & resource quality: a 115 share that transfers WITHOUT error has land
 Opaque (black-box) titles are a LAST resort — prefer candidates whose titles transparently state episodes/quality. For an ongoing show's just-aired episode, a black-box resource whose PUBLISH TIME predates that episode's air time almost certainly does NOT contain it; do not bet on it.
 ${languageLine(options)}
 ${searchHintsBlock(options)}
+${qualityGuidanceBlock(options)}
 ${LOOP_GUIDANCE}`;
 }
 
@@ -107,6 +117,7 @@ Single video: reject packs, collections, multi-part, box sets, or anything struc
 Dead links are the norm — many 115 shares are expired/cancelled (链接已过期 / 分享已取消 / 错误的链接). When you have RANKED several 115-share candidates that are all the SAME target film (best resource first), hand that ORDERED list to transferUntilLanded({candidateIds:[...]}): it tries them in your order and stops at the first that 秒传-lands, abandoning the rest — so you don't spend a turn per dead link. It is 115-shares ONLY and the SET must be your vetted choice (a keyword search mixes in same-named DIFFERENT works — e.g. a variety show or an unrelated cartoon — which you must exclude FIRST). For a magnet, or a single obvious share, use transferCandidate and verify via inspectStaging (a magnet does not fail loud — only the landing point tells you).
 ${languageLine(options)}
 ${searchHintsBlock(options)}
+${qualityGuidanceBlock(options)}
 Your loop (you drive it; the system only orchestrates the tool calls). A MOVIE is simple — there is NO season distribution and NO separate staging to discard (the film lands in the movie directory and flattenMovie cleans the wrapper in place). At EVERY decision point lay out Evidence → Facts → Decision (read your skill's "protocol" section); once a transfer has LANDED, do NOT keep searching/transferring — verify and finish.
 1. searchResources — bare title first; re-keyword (add the original/English name or "全集") only if weak. Stop the moment you can identify the one correct film.
 2. Decide the ONE correct film (right title AND year, not a remake / same-IP other film / a same-keyword different work) and RANK its candidate links best-first.
@@ -167,7 +178,6 @@ export async function runTvAnimeTaskAgent(request: RunTvAnimeRequest): Promise<A
     target.seasons.length === 1 ? `season ${target.seasons[0]}` : `seasons ${target.seasons.join(", ")}`;
   const prompt = `Acquire the missing episodes for "${target.title}"${target.aliases.length ? ` (aliases: ${target.aliases.join(", ")})` : ""}, ${seasonsLabel}.
 Missing episodes (the coverage need — may span multiple seasons): ${target.missingEpisodes.join(", ")}.
-Quality preference: ${target.qualityPreference}.
 If one pack covers multiple seasons, distribute its files in ONE plan with a move per season (moveToSeason({moves:[{season,fileIds}]})) and take only still-missing episodes — never recopy a season already present. Cover every missing episode with the fewest reliable transfers, keep each season directory clean, mark what truly landed, then finish.`;
   return runAcquisitionAgent({
     sandbox,
@@ -183,7 +193,6 @@ export async function runMovieTaskAgent(request: RunMovieRequest): Promise<Acqui
   const { sandbox, model, target, maxSteps, onProgress, ...promptOptions } = request;
   const prompt = `Acquire the movie "${target.title}" (${target.year})${target.aliases.length ? ` (aliases: ${target.aliases.join(", ")})` : ""}.
 This is the coverage need: the single MOVIE token. Cross-check title AND year so you do not grab a remake or same-IP different film.
-Quality preference: ${target.qualityPreference}.
 Find the one correct film, transfer it, keep the directory clean, mark it present, then finish.`;
   return runAcquisitionAgent({
     sandbox,

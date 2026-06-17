@@ -76,6 +76,19 @@ describe("TV/anime system prompt carries the 字字泣血 invariants", () => {
   });
 });
 
+describe("quality guidance injection", () => {
+  it("tv & movie system prompts include qualityGuidance when provided", () => {
+    const g = "画质偏好:高(≈4K)。XYZ-MARKER";
+    expect(buildTvAnimeSystemPrompt({ qualityGuidance: g })).toContain("XYZ-MARKER");
+    expect(buildMovieSystemPrompt({ qualityGuidance: g })).toContain("XYZ-MARKER");
+  });
+
+  it("omits the quality block entirely when no qualityGuidance (不限)", () => {
+    expect(buildTvAnimeSystemPrompt({})).not.toContain("画质偏好");
+    expect(buildMovieSystemPrompt({})).not.toContain("画质偏好");
+  });
+});
+
 describe("both prompts forcefully mandate reading the skill manual", () => {
   it.each([
     ["movie", buildMovieSystemPrompt({})],
