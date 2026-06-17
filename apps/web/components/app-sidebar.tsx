@@ -1,12 +1,13 @@
 import Link from "next/link";
-import { Bell, Film, Library, Settings } from "lucide-react";
+import { Activity, Bell, Film, Library, Settings } from "lucide-react";
 import { SearchNavLink } from "./search-memory";
+import { ActivityNavBadge } from "./activity-nav-badge";
 
 export function AppSidebar({
   active,
   searchQuery = "",
 }: {
-  active: "search" | "library" | "notifications" | "settings" | "none";
+  active: "search" | "library" | "notifications" | "activity" | "settings" | "none";
   searchQuery?: string;
 }) {
   return (
@@ -44,8 +45,18 @@ export function AppSidebar({
               通知
             </Link>
           </li>
-          {/* The desktop sidebar puts 设置 in the footer card; on the mobile top
-              bar that footer is hidden, so surface 设置 as a nav item there. */}
+          {/* 活动 + 设置 are secondary: on desktop they live in the footer; on the
+              mobile top bar (footer hidden) they surface as nav items here. */}
+          <li className="nav-activity-item">
+            <Link
+              className={`nav-item ${active === "activity" ? "is-active" : ""}`}
+              href="/activity"
+            >
+              <Activity size={16} aria-hidden />
+              活动
+              <ActivityNavBadge />
+            </Link>
+          </li>
           <li className="nav-settings-item">
             <Link
               className={`nav-item ${active === "settings" ? "is-active" : ""}`}
@@ -59,6 +70,14 @@ export function AppSidebar({
       </nav>
 
       <div className="sidebar-footer">
+        <Link
+          className={`nav-item nav-secondary ${active === "activity" ? "is-active" : ""}`}
+          href="/activity"
+        >
+          <Activity size={16} aria-hidden />
+          活动
+          <ActivityNavBadge />
+        </Link>
         <Link className="health-card" href="/settings" style={{ textDecoration: "none", color: "inherit" }}>
           <span className="health-icon">
             <Settings size={16} aria-hidden />
