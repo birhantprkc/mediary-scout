@@ -54,3 +54,29 @@ export async function ensureSeasonAcquisitionDirectories(
   });
   return { showDirectoryId, seasonDirectoryIds, stagingDirectoryId };
 }
+
+/**
+ * Run an acquisition body, then ALWAYS discard the run's staging dir — on success,
+ * failure, or honest no-coverage alike. The agent keeps its own discardStaging and
+ * normally calls it; this finally is the HARNESS-level leak guard for the paths
+ * where it doesn't (e.g. 斗破苍穹: a 335-file pack hit the list cap → the agent
+ * reportNoCoverage'd and finished, leaving 335 transferred files in staging).
+ * removeDirectory is idempotent: if the agent already discarded, the "already gone"
+ * error is swallowed so cleanup never masks the real result. It only ever touches
+ * THIS run's ephemeral staging dir — never a Season/library dir.
+ */
+export async function withStagingCleanup<T>(
+  args: { executor: Pick<StorageExecutor, "removeDirectory">; stagingDirectoryId: string },
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } finally {
+    try {
+      await args.executor.removeDirectory(args.stagingDirectoryId);
+    } catch {
+      // Idempotent: staging may already be gone (agent discarded it). Never let
+      // a cleanup failure throw over the real outcome.
+    }
+  }
+}

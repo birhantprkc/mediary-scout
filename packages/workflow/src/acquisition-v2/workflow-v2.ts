@@ -1,6 +1,10 @@
 import type { LanguageModel } from "ai";
 import type { ResourceProvider, StorageExecutor } from "../ports.js";
-import { ensureSeasonAcquisitionDirectories, type AcquisitionDirectories } from "./directory-lifecycle.js";
+import {
+  ensureSeasonAcquisitionDirectories,
+  withStagingCleanup,
+  type AcquisitionDirectories,
+} from "./directory-lifecycle.js";
 import type { DeadLinkStore } from "./dead-links.js";
 import { runAcquisitionV2, type AcquisitionV2Outcome } from "./orchestrator.js";
 import { syncSeasonNeed } from "./sync-need.js";
@@ -66,6 +70,14 @@ export async function runAcquisitionV2Workflow(
     seasons: request.seasons.map((season) => season.seasonNumber),
     workflowRunId: request.workflowRunId,
   });
+
+  // Harness-level leak guard: whatever the agent does (covers, fails, or
+  // reportNoCoverage), the run's staging dir is discarded when this returns or
+  // throws — the 斗破苍穹 335-file leak fix. The agent keeps its own discardStaging
+  // (and normally calls it); this is the deterministic backstop.
+  return await withStagingCleanup(
+    { executor: request.executor, stagingDirectoryId: directories.stagingDirectoryId },
+    async () => {
   const seasonsForSync = request.seasons.map((season) => ({
     seasonNumber: season.seasonNumber,
     latestAiredEpisode: season.latestAiredEpisode,
@@ -125,4 +137,6 @@ export async function runAcquisitionV2Workflow(
     obtained: after.obtained,
     providerAhead: after.providerAhead,
   };
+    },
+  );
 }
