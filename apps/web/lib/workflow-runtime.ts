@@ -2,7 +2,6 @@ import {
   createPanSouResourceProviderFromEnv,
   createProtectedPan115CookieStorageExecutorFromEnv,
   createTmdbMetadataProvider,
-  createTmdbMetadataProviderFromEnv,
   TMDB_DIRECT_BASE_URL,
   type TmdbAccess,
   episodeCode,
@@ -309,11 +308,11 @@ function parseMovieCandidateId(candidateId: string): number | null {
 export async function movieTargetFromTmdbId(
   tmdbId: number,
 ): Promise<{ title: MediaTitle; keyword: string } | null> {
-  if (process.env.MEDIA_TRACK_SEARCH_PROVIDER === "tmdb" && process.env.TMDB_READ_TOKEN) {
+  if (process.env.MEDIA_TRACK_SEARCH_PROVIDER === "tmdb") {
     return prepareMovieTarget({
       tmdbId,
       qualityPreference: defaultQuality(),
-      metadataProvider: createTmdbMetadataProviderFromEnv(),
+      metadataProvider: createTmdbMetadataProvider(await getTmdbAccesses(getWorkflowRepository())),
     });
   }
   const candidate = findDemoCandidateByTmdbId(tmdbId);
@@ -420,11 +419,11 @@ export async function queueCandidateSeries(candidateId: string): Promise<Candida
   if (!parsed) {
     return { status: "unsupported", message: "暂时只支持剧集的全剧获取。" };
   }
-  if (process.env.MEDIA_TRACK_SEARCH_PROVIDER === "tmdb" && process.env.TMDB_READ_TOKEN) {
+  if (process.env.MEDIA_TRACK_SEARCH_PROVIDER === "tmdb") {
     const target = await prepareSeriesTarget({
       tmdbId: parsed.tmdbId,
       qualityPreference: defaultQuality(),
-      metadataProvider: createTmdbMetadataProviderFromEnv(),
+      metadataProvider: createTmdbMetadataProvider(await getTmdbAccesses(getWorkflowRepository())),
     });
     const request = await queueSeriesInitialization({
       title: target.title,
@@ -561,7 +560,7 @@ export async function runScheduledType3(options?: { force?: boolean }): Promise<
  * the sweep on stored counts.
  */
 function tmdbSeasonMetadataSync(): SeasonMetadataSync | undefined {
-  if (!(process.env.MEDIA_TRACK_SEARCH_PROVIDER === "tmdb" && process.env.TMDB_READ_TOKEN)) {
+  if (process.env.MEDIA_TRACK_SEARCH_PROVIDER !== "tmdb") {
     return undefined;
   }
   return async ({ tmdbId, seasonNumber }) => {
@@ -570,7 +569,7 @@ function tmdbSeasonMetadataSync(): SeasonMetadataSync | undefined {
       mediaType: "tv",
       seasonNumber,
       qualityPreference: defaultQuality(),
-      metadataProvider: createTmdbMetadataProviderFromEnv(),
+      metadataProvider: createTmdbMetadataProvider(await getTmdbAccesses(getWorkflowRepository())),
     });
     return {
       latestAiredEpisode: target.season.latestAiredEpisode,
@@ -597,14 +596,14 @@ async function trackingTargetFromCandidateId(candidateId: string): Promise<{
     return null;
   }
 
-  if (process.env.MEDIA_TRACK_SEARCH_PROVIDER === "tmdb" && process.env.TMDB_READ_TOKEN) {
+  if (process.env.MEDIA_TRACK_SEARCH_PROVIDER === "tmdb") {
     return prepareTrackingTarget({
       tmdbId: parsed.tmdbId,
       mediaType: "tv",
       seasonNumber: parsed.seasonNumber,
       qualityPreference: defaultQuality(),
       storageDirectoryId: storageDirectoryIdForCandidate(candidateId),
-      metadataProvider: createTmdbMetadataProviderFromEnv(),
+      metadataProvider: createTmdbMetadataProvider(await getTmdbAccesses(getWorkflowRepository())),
     });
   }
 

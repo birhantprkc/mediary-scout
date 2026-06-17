@@ -1,5 +1,5 @@
 import {
-  createTmdbMetadataProviderFromEnv,
+  createTmdbMetadataProvider,
   getTrackedSeasonStatusView,
   isMovieUnreleased,
   prepareSeriesTarget,
@@ -21,6 +21,7 @@ import {
 import { PostgresMediaSearchCache } from "./tmdb-cache";
 import {
   ensureDemoSeeded,
+  getTmdbAccesses,
   getWorkflowRepository,
   movieTargetFromTmdbId,
   postgresConnectionString,
@@ -99,7 +100,7 @@ function getDurableTargetCache(): PostgresMediaSearchCache {
  * null when the title is unknown to both.
  */
 async function seriesTargetFor(tmdbId: number): Promise<PreparedSeriesTarget | null> {
-  if (process.env.MEDIA_TRACK_SEARCH_PROVIDER === "tmdb" && process.env.TMDB_READ_TOKEN) {
+  if (process.env.MEDIA_TRACK_SEARCH_PROVIDER === "tmdb") {
     const cached = seriesTargetCache.get(tmdbId);
     if (cached && cached.expiresAt > Date.now()) {
       return cached.value;
@@ -115,7 +116,7 @@ async function seriesTargetFor(tmdbId: number): Promise<PreparedSeriesTarget | n
       const value = await prepareSeriesTarget({
         tmdbId,
         qualityPreference: process.env.MEDIA_TRACK_DEFAULT_QUALITY ?? "4K",
-        metadataProvider: createTmdbMetadataProviderFromEnv(),
+        metadataProvider: createTmdbMetadataProvider(await getTmdbAccesses(getWorkflowRepository())),
       });
       seriesTargetCache.set(tmdbId, { value, expiresAt: Date.now() + SERIES_TARGET_TTL_MS });
       await durable.setJson(`series-target:${tmdbId}`, value, SERIES_TARGET_TTL_MS);

@@ -1,5 +1,5 @@
 import {
-  createTmdbSearchProviderFromEnv,
+  createTmdbSearchProvider,
   getSearchPageView,
   InMemoryMediaSearchCache,
   type MediaSearchProvider,
@@ -10,6 +10,7 @@ import { demoMediaSearchProvider } from "./demo-candidates";
 import { PostgresMediaSearchCache } from "./tmdb-cache";
 import {
   ensureDemoSeeded,
+  getTmdbAccesses,
   getWorkflowRepository,
   getWorkflowStatusView,
   postgresConnectionString,
@@ -38,7 +39,7 @@ export async function getSearchView(query: string): Promise<SearchPageView> {
   await ensureDemoSeeded(repository);
   return getSearchPageView({
     query,
-    provider: getMediaSearchProvider(),
+    provider: await getMediaSearchProvider(),
     cache: getSearchCache(),
     repository,
   });
@@ -121,10 +122,10 @@ function getSearchCache() {
   return demoSearchCache;
 }
 
-function getMediaSearchProvider(): MediaSearchProvider {
+async function getMediaSearchProvider(): Promise<MediaSearchProvider> {
   if (process.env.MEDIA_TRACK_SEARCH_PROVIDER !== "tmdb") {
     return demoMediaSearchProvider;
   }
-  tmdbSearchProvider ??= createTmdbSearchProviderFromEnv();
+  tmdbSearchProvider ??= createTmdbSearchProvider(await getTmdbAccesses(getWorkflowRepository()));
   return tmdbSearchProvider;
 }
