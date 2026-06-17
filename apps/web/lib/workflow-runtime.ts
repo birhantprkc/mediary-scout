@@ -1,6 +1,8 @@
 import {
   createPanSouResourceProviderFromEnv,
   createProtectedPan115CookieStorageExecutorFromEnv,
+  CompositeResourceProvider,
+  ProwlarrResourceProvider,
   createTmdbMetadataProvider,
   TMDB_DIRECT_BASE_URL,
   type TmdbAccess,
@@ -167,7 +169,7 @@ export async function runNextQueuedWorkflow() {
   const startedAt = new Date().toISOString();
   const type2 = await runQueuedType2Workflow({
     repository,
-    resourceProvider: getWorkerResourceProvider(),
+    resourceProvider: await getWorkerResourceProvider(),
     storage: getWorkerStorageExecutor(),
     model,
     ...language,
@@ -181,7 +183,7 @@ export async function runNextQueuedWorkflow() {
   }
   const series = await runQueuedSeriesInitialization({
     repository,
-    resourceProvider: getWorkerResourceProvider(),
+    resourceProvider: await getWorkerResourceProvider(),
     storage: getWorkerStorageExecutor(),
     model,
     ...language,
@@ -195,7 +197,7 @@ export async function runNextQueuedWorkflow() {
   }
   const movie = await runQueuedMovieAcquisition({
     repository,
-    resourceProvider: getWorkerResourceProvider(),
+    resourceProvider: await getWorkerResourceProvider(),
     storage: getWorkerStorageExecutor(),
     model,
     ...language,
@@ -285,6 +287,27 @@ export async function getTmdbAccesses(
   const proxyBase = env.TMDB_PROXY_BASE_URL?.trim() || DEFAULT_TMDB_PROXY_BASE_URL;
   accesses.push({ baseURL: proxyBase });
   return accesses;
+}
+
+export const PROWLARR_BASE_URL_SETTING_KEY = "prowlarr_base_url";
+export const PROWLARR_API_KEY_SETTING_KEY = "prowlarr_api_key";
+
+/** The user's configured Prowlarr indexer aggregator (Settings → 资源提供商).
+ *  Each field undefined when unset/blank → getWorkerResourceProvider skips it. */
+export async function getProwlarrConfig(
+  repository: { getSetting(key: string): Promise<string | null> },
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ baseURL: string | undefined; apiKey: string | undefined }> {
+  const read = async (key: string, envKey: string): Promise<string | undefined> => {
+    const dbValue = (await repository.getSetting(key))?.trim();
+    if (dbValue) return dbValue;
+    const envValue = env[envKey]?.trim();
+    return envValue ? envValue : undefined;
+  };
+  return {
+    baseURL: await read(PROWLARR_BASE_URL_SETTING_KEY, "PROWLARR_BASE_URL"),
+    apiKey: await read(PROWLARR_API_KEY_SETTING_KEY, "PROWLARR_API_KEY"),
+  };
 }
 
 export const DAILY_SWEEP_TIME_SETTING_KEY = "daily_sweep_time";
@@ -525,7 +548,7 @@ export async function runScheduledType3(options?: { force?: boolean }): Promise<
     const { model, preferredLanguage, qualityPreference } = await getAgentModel(repository);
     result = await runScheduledType3Monitoring({
       repository,
-      resourceProvider: getWorkerResourceProvider(),
+      resourceProvider: await getWorkerResourceProvider(),
       storage: getWorkerStorageExecutor(),
       model,
       ...(preferredLanguage === undefined ? {} : { preferredLanguage }),
@@ -666,9 +689,21 @@ function parseTvCandidateId(candidateId: string): { tmdbId: number; seasonNumber
   };
 }
 
-function getWorkerResourceProvider(): ResourceProvider {
+async function getWorkerResourceProvider(): Promise<ResourceProvider> {
   if (process.env.MEDIA_TRACK_WORKFLOW_ADAPTER === "pansou") {
-    return createPanSouResourceProviderFromEnv();
+    const providers: Array<{ name: string; provider: ResourceProvider }> = [
+      { name: "pansou", provider: createPanSouResourceProviderFromEnv() },
+    ];
+    const prowlarr = await getProwlarrConfig(getWorkflowRepository());
+    if (prowlarr.baseURL && prowlarr.apiKey) {
+      providers.push({
+        name: "prowlarr",
+        provider: new ProwlarrResourceProvider({ baseURL: prowlarr.baseURL, apiKey: prowlarr.apiKey }),
+      });
+    }
+    return providers.length > 1
+      ? new CompositeResourceProvider({ providers })
+      : providers[0]!.provider;
   }
   fakeResourceProvider ??= new FakeResourceProvider({
     keywordResults: {

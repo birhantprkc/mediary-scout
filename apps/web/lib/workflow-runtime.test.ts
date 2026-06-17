@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   getLlmConfig,
+  getProwlarrConfig,
   getQualityPreference,
   getTmdbAccesses,
+  PROWLARR_API_KEY_SETTING_KEY,
+  PROWLARR_BASE_URL_SETTING_KEY,
   TMDB_API_KEY_SETTING_KEY,
 } from "./workflow-runtime";
 
@@ -90,5 +93,28 @@ describe("getTmdbAccesses", () => {
     expect(accesses).toHaveLength(1);
     expect(accesses[0]?.readToken).toBeUndefined();
     expect(accesses[0]?.baseURL).toMatch(/^https:\/\//);
+  });
+});
+
+describe("getProwlarrConfig", () => {
+  it("reads base url + api key from settings (trim, blank→undefined)", async () => {
+    const cfg = await getProwlarrConfig(
+      repoMap({ [PROWLARR_BASE_URL_SETTING_KEY]: " https://p.example ", [PROWLARR_API_KEY_SETTING_KEY]: "K" }),
+      {} as unknown as NodeJS.ProcessEnv,
+    );
+    expect(cfg).toEqual({ baseURL: "https://p.example", apiKey: "K" });
+  });
+
+  it("falls back to env when settings are blank", async () => {
+    const cfg = await getProwlarrConfig(
+      repoMap({}),
+      { PROWLARR_BASE_URL: "https://env.example", PROWLARR_API_KEY: "EK" } as unknown as NodeJS.ProcessEnv,
+    );
+    expect(cfg).toEqual({ baseURL: "https://env.example", apiKey: "EK" });
+  });
+
+  it("returns undefined fields when nothing configured", async () => {
+    const cfg = await getProwlarrConfig(repoMap({}), {} as unknown as NodeJS.ProcessEnv);
+    expect(cfg).toEqual({ baseURL: undefined, apiKey: undefined });
   });
 });
